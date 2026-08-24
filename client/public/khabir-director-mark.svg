@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" role="img" aria-labelledby="title">
+  <title id="title">خبير الشواهد للمدير</title>
+  <rect width="192" height="192" rx="44" fill="#183D5A"/>
+  <path d="M57 49h65a16 16 0 0 1 16 16v62a16 16 0 0 1-16 16H57a16 16 0 0 1-16-16V65a16 16 0 0 1 16-16Z" fill="#FFF8EE"/>
+  <path d="M67 82h44M67 104h30" stroke="#49846E" stroke-linecap="round" stroke-width="10"/>
+  <path d="m116 116 9 9 19-22" fill="none" stroke="#2D7DD2" stroke-linecap="round" stroke-linejoin="round" stroke-width="9"/>
+</svg>

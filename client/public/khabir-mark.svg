@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" role="img" aria-labelledby="title">
+  <title id="title">خبير الشواهد</title>
+  <rect width="192" height="192" rx="44" fill="#FFF8EE"/>
+  <path d="M143 47c-41-9-80 15-92 53-10 33 4 64 36 76" fill="none" stroke="#183D5A" stroke-linecap="round" stroke-width="14"/>
+  <circle cx="125" cy="70" r="13" fill="#2D7DD2"/>
+  <circle cx="104" cy="98" r="11" fill="#49846E"/>
+  <circle cx="85" cy="121" r="8" fill="#F4A261"/>
+</svg>
