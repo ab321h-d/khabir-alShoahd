@@ -116,3 +116,6 @@ temp/
 # Manus version file (auto-generated, not part of source)
 client/public/__manus__/version.json
 .project-config.json
+
+# License signing tool output (private key material — never committed)
+scripts/license-tools/.local-keys/
