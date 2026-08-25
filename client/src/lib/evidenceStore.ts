@@ -525,11 +525,46 @@ export const prototypeStore = {
   },
 
   async clearEvidenceImages() {
-    const protectedEvidenceIds = new Set(["school-profile", "education-authority"]);
-    const images = await getAllStoredImages();
-    await Promise.all(images.filter((image) => !protectedEvidenceIds.has(image.evidenceId)).map((image) => deleteStoredImage(image.id)));
-  },
+    const protectedEvidenceIds = new Set(["school-profile"]);
+    if (typeof window === "undefined") return;
 
+    const indexedDraft = await readIndexedDraft();
+    const localDraft = this.load();
+    const currentDraft = !indexedDraft
+      ? localDraft
+      : new Date(localDraft.updatedAt).getTime() > new Date(indexedDraft.updatedAt).getTime() ? localDraft : indexedDraft;
+
+    const clearedDraft: PrototypeDraft = { ...currentDraft, bundle: [], captured: false, updatedAt: new Date().toISOString() };
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(clearedDraft));
+
+    if (!window.indexedDB) return;
+    const images = await getAllStoredImages();
+    const idsToDelete = images
+      .filter((image) => !protectedEvidenceIds.has(image.evidenceId))
+      .map((image) => image.id);
+
+    const database = await openDatabase();
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction([STORE_NAME, IMAGE_STORE_NAME], "readwrite");
+      transaction.objectStore(STORE_NAME).put(clearedDraft, DRAFT_ID);
+
+      const imageStore = transaction.objectStore(IMAGE_STORE_NAME);
+      idsToDelete.forEach((id) => imageStore.delete(id));
+
+      transaction.oncomplete = () => {
+        database.close();
+        resolve();
+      };
+      transaction.onerror = () => {
+        database.close();
+        reject(transaction.error);
+      };
+      transaction.onabort = () => {
+        database.close();
+        reject(transaction.error);
+      };
+    });
+  },
   async clearAll() {
     if (typeof window !== "undefined") {
       window.localStorage.removeItem(STORAGE_KEY);

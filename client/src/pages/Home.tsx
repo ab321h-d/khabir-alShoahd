@@ -880,7 +880,7 @@ export default function Home() {
     try {
       await Promise.all([prototypeStore.clearAll(), directorStore.clearAll()]);
       try {
-        [liteModeStorageKey, managerShareStorageKey, "khabir-director-name", "theme"].forEach((key) => window.localStorage.removeItem(key));
+        [liteModeStorageKey, managerShareStorageKey, periodSelectionStorageKey, firstSetupStorageKey, "khabir-director-name", "khabir-director-academic-year", "khabir-director-whatsapp-template", "khabir-collaboration-contacts.v1"].forEach((key) => window.localStorage.removeItem(key));
         appAppearance.clearTheme();
         appProtection.clearPassword();
       } catch { /* IndexedDB data has already been cleared; reload still returns a fresh local draft. */ }
