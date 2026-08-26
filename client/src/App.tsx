@@ -6,6 +6,8 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import { appVariant, isDirectorStandalone, isTeacherStandalone } from "./lib/appVariant";
 import { appAppearance, appPreferenceKeys, appProtection } from "./lib/appPreferences";
 import { brandEmblemUrl, brandWordmarkUrl } from "./lib/brand";
+import { LicenseProvider } from "./contexts/LicenseContext";
+import { LicenseActivation } from "./components/LicenseActivation";
 
 const Home = isDirectorStandalone ? null : lazy(() => import("./pages/Home"));
 const Director = isTeacherStandalone ? null : lazy(() => import("./pages/Director"));
@@ -103,9 +105,13 @@ function AppSplash({ onFinish }: { onFinish: () => void }) {
 
 function App() {
   const [showSplash, setShowSplash] = useState(true);
+  const licenseVariant = appVariant === "director" ? "director" : "teacher";
   return (
     <ErrorBoundary>
-      <AppLock><Router /></AppLock>
+      <LicenseProvider variant={licenseVariant}>
+        <AppLock><Router /></AppLock>
+        <LicenseActivation />
+      </LicenseProvider>
       {showSplash && <AppSplash onFinish={() => setShowSplash(false)} />}
     </ErrorBoundary>
   );
