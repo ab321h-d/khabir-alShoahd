@@ -54,6 +54,7 @@ import { brandEmblemUrl, brandWordmarkUrl } from "@/lib/brand";
 import { saudiMinistryOfEducationLogoUrl } from "@/lib/ministryLogo";
 import CollaborationInviteDialog from "@/components/CollaborationInviteDialog";
 import { inviteFromLocation } from "@/lib/collaborationInvite";
+import { assertWriteAllowedSync } from "@/lib/license/licenseGuard";
 
 type Step = 0 | 1;
 type BeforeInstallPromptEvent = Event & {
@@ -830,6 +831,7 @@ export default function Home() {
   const saveSchoolLogo = async (file?: File) => {
     if (!file) return;
     try {
+      assertWriteAllowedSync("teacher");
       await localImageStore.deleteEvidenceImages("school-profile");
       await localImageStore.saveEvidenceImages([file], "school-profile");
       await refreshSchoolLogo();

@@ -1,4 +1,5 @@
 import type { DirectorBackupSubmission } from "./directorStore";
+import { assertWriteAllowed, assertWriteAllowedSync, isWriteAllowedSync } from "./license/licenseGuard";
 
 /**
  * Offline-first repository: IndexedDB is the primary local store, while
@@ -504,8 +505,16 @@ export const prototypeStore = {
     return new Date(localDraft.updatedAt).getTime() > new Date(indexedDraft.updatedAt).getTime() ? localDraft : indexedDraft;
   },
 
+  /**
+   * PHASE B.8: حراسة الكتابة. تبقى الدالة sync وتُعيد void (بلا تغيير في
+   * التوقيع العام) — الحظر يتم بصمت (no-op) عبر isWriteAllowedSync بدل رمي
+   * استثناء، لأن هذه الدالة تُستدعى من داخل useEffect في Home.tsx بلا
+   * try/catch؛ رمي استثناء هناك قد يُسقِط الشجرة عبر ErrorBoundary. هذا
+   * قرار تصميم متعمَّد ضمن نطاق evidenceStore.ts، لا يلمس Home.tsx.
+   */
   save(draft: PrototypeDraft) {
     if (typeof window === "undefined") return;
+    if (!isWriteAllowedSync("teacher")) return;
     const next = { ...draft, updatedAt: new Date().toISOString() };
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
     void queueIndexedDraftWrite(next);
@@ -578,8 +587,10 @@ export const prototypeStore = {
     downloadPayload(payload, "khabir-alshawahid-backup.json");
   },
 
+  /** PHASE B.8: حراسة الكتابة. تُستدعى من زر صريح (onClick)، لا من effect — رمي الاستثناء آمن هنا. */
   saveCoverPreset(draft: PrototypeDraft) {
     if (typeof window === "undefined") return;
+    assertWriteAllowedSync("teacher");
     const preset: CoverPreset = {
       schoolName: draft.schoolName,
       schoolStage: draft.schoolStage,
@@ -692,7 +703,9 @@ export const prototypeStore = {
 };
 
 export const localImageStore = {
+  /** PHASE B.8: حراسة الكتابة. كل مواقع الاستدعاء في Home.tsx مغلَّفة بـtry/catch أصلًا. */
   async saveEvidenceImages(files: File[], evidenceId = "capture-evidence"): Promise<LocalImageMetadata[]> {
+    await assertWriteAllowed("teacher");
     const existing = await getAllStoredImages();
     const startOrder = existing.filter((image) => image.evidenceId === evidenceId).length;
     const results: LocalImageMetadata[] = [];
@@ -789,7 +802,13 @@ export const localImageStore = {
     return { used: images.reduce((total, image) => total + image.size, 0), quota: estimate?.quota || null, imageCount: images.length };
   },
 
+  /**
+   * PHASE B.8: حراسة صريحة قبل الحذف الداخلي (وليس فقط الاعتماد على الحراسة
+   * داخل saveEvidenceImages) — لتفادي حذف الصورة الحالية دون حفظ الجديدة لو
+   * حُظرت الكتابة بعد الحذف. غير مستخدَمة حاليًا في أي مسار فعلي (كود دفاعي).
+   */
   async saveCapture(file: File): Promise<LocalImageMetadata> {
+    await assertWriteAllowed("teacher");
     await this.deleteEvidenceImages();
     const [metadata] = await this.saveEvidenceImages([file]);
     return metadata;

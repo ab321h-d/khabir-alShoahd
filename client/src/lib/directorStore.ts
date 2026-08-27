@@ -1,3 +1,5 @@
+import { assertWriteAllowed } from "./license/licenseGuard";
+
 export type ReviewStatus = "new" | "reviewed" | "follow_up";
 export type ReviewLevel = "" | "متميز" | "متحقق" | "يحتاج متابعة";
 // "الصيفي" قيمة قديمة محفوظة في بعض الأجهزة؛ تُقبل للقراءة فقط ثم تُعرض كعام دراسي.
@@ -63,7 +65,9 @@ export const directorStore = {
     return closeWhenDone(database, requestValue(database.transaction(storeName, "readonly").objectStore(storeName).getAll()).then((items) => (items as StoredSubmission[]).map(publicRecord).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))));
   },
 
+  /** PHASE B.8: حراسة الكتابة (إنشاء). موقع الاستدعاء الوحيد في Director.tsx مغلَّف بـtry/catch. */
   async save(file: File, teacherName: string, academicTerm: AcademicTerm = ""): Promise<DirectorSubmission> {
+    await assertWriteAllowed("director");
     const database = await openDatabase();
     const now = new Date().toISOString();
     const item: StoredSubmission = {
@@ -74,7 +78,13 @@ export const directorStore = {
     return publicRecord(item);
   },
 
+  /**
+   * PHASE B.8: حراسة الكتابة (تعديل). ⚠️ موقع الاستدعاء الوحيد
+   * (Director.tsx: updateReview) غير مغلَّف بـtry/catch حاليًا — راجع تقرير
+   * التنفيذ لتفصيل هذه النقطة (فشل صامت غير معطوب، لا انهيار).
+   */
   async update(id: string, patch: Partial<Pick<DirectorSubmission, "reviewStatus" | "reviewLevel" | "academicTerm" | "comment" | "whatsappNumber" | "whatsappMessage">>): Promise<DirectorSubmission | null> {
+    await assertWriteAllowed("director");
     const database = await openDatabase();
     const transaction = database.transaction(storeName, "readwrite");
     const store = transaction.objectStore(storeName);

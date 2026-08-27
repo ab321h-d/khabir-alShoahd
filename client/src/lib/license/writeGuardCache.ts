@@ -15,9 +15,9 @@ export const setCachedWriteStatus = (variant: AppLicenseVariant, writesAllowed: 
   cachedWriteStatus = { variant, writesAllowed };
 };
 
-/** فحص متزامن بلا I/O. متفائل (يسمح) قبل أول تحديث للذاكرة أو لنطاق مختلف. */
+/** فحص متزامن بلا I/O. متشائم (يمنع/fail-closed) إن لم تُحدَّث الذاكرة بعد لهذا النطاق تحديدًا، أو لنطاق مختلف. */
 export const isWriteAllowedSync = (variant: AppLicenseVariant): boolean => {
-  if (!cachedWriteStatus || cachedWriteStatus.variant !== variant) return true;
+  if (!cachedWriteStatus || cachedWriteStatus.variant !== variant) return false;
   return cachedWriteStatus.writesAllowed;
 };
 
