@@ -200,8 +200,12 @@ export default function Director() {
   const updateReview = async (patch: Partial<Pick<DirectorSubmission, "reviewStatus" | "reviewLevel" | "academicTerm" | "comment" | "whatsappNumber" | "whatsappMessage">>) => {
     if (!selected) return;
     const enrichedPatch = patch.reviewStatus === "follow_up" && !selected.whatsappMessage ? { ...patch, whatsappMessage: renderWhatsAppTemplate(whatsAppTemplate, selected, directorName) } : patch;
-    const next = await directorStore.update(selected.id, enrichedPatch);
-    if (next) setSubmissions((items) => items.map((item) => item.id === next.id ? next : item));
+    try {
+      const next = await directorStore.update(selected.id, enrichedPatch);
+      if (next) setSubmissions((items) => items.map((item) => item.id === next.id ? next : item));
+    } catch {
+      showToast("تعذر حفظ التقييم");
+    }
   };
 
   const exportReview = async (share: boolean) => {
