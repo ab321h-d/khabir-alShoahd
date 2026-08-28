@@ -42,7 +42,7 @@ export default defineConfig({
     VitePWA({
       registerType: "autoUpdate",
       manifest: {
-        id: "/",
+        id: isDirector ? "/khabir-alshawahid-director" : "/khabir-alshawahid-teacher",
         name: appIdentity.name,
         short_name: appIdentity.shortName,
         description: appIdentity.description,
@@ -93,5 +93,8 @@ export default defineConfig({
     host: true,
     port: 3000,
     allowedHosts: true,
+  },
+  preview: {
+    port: isDirector ? 4174 : 4173,
   },
 });
