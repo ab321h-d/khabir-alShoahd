@@ -15,6 +15,7 @@ import {
   ChevronDown,
   CloudOff,
   Download,
+  Eye,
   FileImage,
   FileDown,
   FileText,
@@ -53,6 +54,7 @@ import { getSuggestedHijriYear } from "@/lib/academicYear";
 import { brandEmblemUrl, brandWordmarkUrl } from "@/lib/brand";
 import { saudiMinistryOfEducationLogoUrl } from "@/lib/ministryLogo";
 import CollaborationInviteDialog from "@/components/CollaborationInviteDialog";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { inviteFromLocation } from "@/lib/collaborationInvite";
 import { assertWriteAllowedSync } from "@/lib/license/licenseGuard";
 
@@ -208,6 +210,8 @@ export default function Home() {
   const [dragOverPerformanceAreaId, setDragOverPerformanceAreaId] = useState<string | null>(null);
   const [openPerformanceAreaId, setOpenPerformanceAreaId] = useState<PerformanceAreaId | null>(null);
   const [editingEvidenceId, setEditingEvidenceId] = useState<string | null>(null);
+  const [previewEvidenceId, setPreviewEvidenceId] = useState<string | null>(null);
+  const [previewImageIndex, setPreviewImageIndex] = useState(0);
   const [editingEvidenceTitle, setEditingEvidenceTitle] = useState("");
   const [editingEvidenceType, setEditingEvidenceType] = useState<EvidenceItem["type"]>("other");
   const [editingEvidenceArea, setEditingEvidenceArea] = useState<PerformanceAreaId>("job_duties");
@@ -324,6 +328,12 @@ export default function Home() {
     for (const image of captureImages) counts[image.metadata.evidenceId] = (counts[image.metadata.evidenceId] || 0) + 1;
     return counts;
   }, [captureImages]);
+  const previewEvidenceItem = useMemo(() => previewEvidenceId ? bundle.find((item) => item.id === previewEvidenceId) || null : null, [previewEvidenceId, bundle]);
+  const previewImages = useMemo(
+    () => previewEvidenceId ? captureImages.filter((image) => image.metadata.evidenceId === previewEvidenceId).sort((a, b) => a.metadata.order - b.metadata.order) : [],
+    [previewEvidenceId, captureImages],
+  );
+  const openEvidencePreview = (item: EvidenceItem) => { setPreviewEvidenceId(item.id); setPreviewImageIndex(0); };
   const selectedPrintImages = useMemo(() => printImageSelection === null ? captureImages : captureImages.filter((image) => printImageSelection.includes(image.metadata.id)), [captureImages, printImageSelection]);
 
   const portableDraft = useMemo(() => ({
@@ -1317,6 +1327,7 @@ export default function Home() {
                                   <>
                                     <span className="bundle-item-copy"><strong>{item.title}</strong><small>{evidenceTypeLabels[item.type]} · {evidenceImageCounts[item.id] || 0} صور</small></span>
                                     <div className="bundle-item-actions">
+                                      <button type="button" onClick={() => openEvidencePreview(item)} aria-label={`معاينة الشاهد ${item.title}`} title="معاينة الشاهد"><Eye size={15} /></button>
                                       <button type="button" onClick={() => openEvidenceImagePicker(item.id, "camera")} aria-label={`التقاط صورة للشاهد ${item.title}`}><Camera size={15} /></button>
                                       <button type="button" onClick={() => openEvidenceImagePicker(item.id, "files")} aria-label={`إضافة صور للشاهد ${item.title}`}><Images size={15} /></button>
                                       <button type="button" onClick={() => beginEvidenceEdit(item)} aria-label={`تعديل ${item.title}`}><PenLine size={15} /></button>
@@ -1421,6 +1432,43 @@ export default function Home() {
           return next;
         });
       }} />
+
+      <Sheet open={previewEvidenceId !== null} onOpenChange={(open) => { if (!open) { setPreviewEvidenceId(null); setPreviewImageIndex(0); } }}>
+        <SheetContent side="bottom" dir="rtl" className="text-right max-h-[85vh] overflow-y-auto overflow-x-hidden">
+          {previewEvidenceItem && (
+            <div className="mx-auto w-full max-w-md">
+              <SheetHeader className="pb-1">
+                <SheetTitle className="break-words">{previewEvidenceItem.title}</SheetTitle>
+              </SheetHeader>
+              <div className="flex flex-col gap-2 px-4 pb-4">
+                {previewImages.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">لا توجد صور مرفقة بهذا الشاهد</p>
+                ) : (
+                  <>
+                    <div className="flex justify-center">
+                      <img src={previewImages[Math.min(previewImageIndex, previewImages.length - 1)]?.url} alt={`صورة الشاهد: ${previewEvidenceItem.title}`} className="w-auto h-auto max-w-full max-h-[40vh] object-contain rounded-lg border" />
+                    </div>
+                    {previewImages.length > 1 && (
+                      <div className="flex justify-center gap-2 overflow-x-auto">
+                        {previewImages.map((image, index) => (
+                          <button key={image.metadata.id} type="button" onClick={() => setPreviewImageIndex(index)} aria-label={`عرض الصورة ${index + 1}`} className={`shrink-0 rounded-md border ${index === previewImageIndex ? "ring-2 ring-primary" : ""}`}>
+                            <img src={image.url} alt="" className="h-14 w-14 object-cover rounded-md" />
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
+                <dl className="flex flex-col gap-1.5 text-sm bg-muted/40 rounded-lg border p-3">
+                  <div className="flex justify-between gap-2"><dt className="text-muted-foreground">بند الأداء</dt><dd>{performanceAreaLabels[previewEvidenceItem.performanceArea] || performanceAreaDefinitions.find((area) => area.id === previewEvidenceItem.performanceArea)?.label || "بند أداء"}</dd></div>
+                  <div className="flex justify-between gap-2"><dt className="text-muted-foreground">نوع الشاهد</dt><dd>{evidenceTypeLabels[previewEvidenceItem.type]}</dd></div>
+                  <div className="flex justify-between gap-2"><dt className="text-muted-foreground">تاريخ الإنشاء</dt><dd>{new Intl.DateTimeFormat("ar-SA-u-ca-gregory", { year: "numeric", month: "long", day: "numeric" }).format(new Date(previewEvidenceItem.createdAt))}</dd></div>
+                </dl>
+              </div>
+            </div>
+          )}
+        </SheetContent>
+      </Sheet>
 
       {clearDataOpen && (
         <div className="modal-backdrop" role="presentation" onMouseDown={() => setClearDataOpen(false)}>
