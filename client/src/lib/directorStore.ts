@@ -1,4 +1,5 @@
 import { assertWriteAllowed } from "./license/licenseGuard";
+import type { CompletenessMetadata } from "./completenessCheck";
 
 export type ReviewStatus = "new" | "reviewed" | "follow_up";
 export type ReviewLevel = "" | "متميز" | "متحقق" | "يحتاج متابعة";
@@ -18,6 +19,8 @@ export type DirectorSubmission = {
   comment: string;
   whatsappNumber?: string;
   whatsappMessage?: string;
+  /** R-NEXT-2: تُملَأ فقط عند الاستيراد من حزمة .khabir.zip صالحة؛ اختيارية، لا تكسر السجلات القديمة. */
+  completenessMetadata?: CompletenessMetadata | null;
 };
 
 type StoredSubmission = DirectorSubmission & { pdf: Blob };
@@ -66,13 +69,13 @@ export const directorStore = {
   },
 
   /** PHASE B.8: حراسة الكتابة (إنشاء). موقع الاستدعاء الوحيد في Director.tsx مغلَّف بـtry/catch. */
-  async save(file: File, teacherName: string, academicTerm: AcademicTerm = ""): Promise<DirectorSubmission> {
+  async save(file: File, teacherName: string, academicTerm: AcademicTerm = "", completenessMetadata: CompletenessMetadata | null = null): Promise<DirectorSubmission> {
     await assertWriteAllowed("director");
     const database = await openDatabase();
     const now = new Date().toISOString();
     const item: StoredSubmission = {
       id: crypto.randomUUID(), fileName: file.name, teacherName: teacherName.trim() || file.name.replace(/\.pdf$/i, ""), importedAt: now, updatedAt: now,
-      size: file.size, reviewStatus: "new", reviewLevel: "", academicTerm, comment: "", whatsappNumber: "", whatsappMessage: "", pdf: file,
+      size: file.size, reviewStatus: "new", reviewLevel: "", academicTerm, comment: "", whatsappNumber: "", whatsappMessage: "", pdf: file, completenessMetadata,
     };
     await closeWhenDone(database, requestValue(database.transaction(storeName, "readwrite").objectStore(storeName).put(item)));
     return publicRecord(item);

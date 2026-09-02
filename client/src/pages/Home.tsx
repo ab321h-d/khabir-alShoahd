@@ -55,6 +55,7 @@ import { brandEmblemUrl, brandWordmarkUrl } from "@/lib/brand";
 import { saudiMinistryOfEducationLogoUrl } from "@/lib/ministryLogo";
 import CollaborationInviteDialog from "@/components/CollaborationInviteDialog";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { computeAreaStatus, type CompletenessMetadata } from "@/lib/completenessCheck";
 import { inviteFromLocation } from "@/lib/collaborationInvite";
 import { assertWriteAllowedSync } from "@/lib/license/licenseGuard";
 
@@ -241,7 +242,7 @@ export default function Home() {
   const [captureImage, setCaptureImage] = useState<{ metadata: LocalImageMetadata; url: string } | null>(null);
   const [captureImages, setCaptureImages] = useState<Array<{ metadata: LocalImageMetadata; url: string }>>([]);
   const [storageSummary, setStorageSummary] = useState({ used: 0, quota: null as number | null, imageCount: 0 });
-  const [exporting, setExporting] = useState<"pdf" | "word" | "print" | null>(null);
+  const [exporting, setExporting] = useState<"pdf" | "word" | "print" | "director-package" | null>(null);
   const [liteMode, setLiteMode] = useState(() => {
     try { return window.localStorage.getItem(liteModeStorageKey) === "1"; } catch { return false; }
   });
@@ -316,18 +317,22 @@ export default function Home() {
   };
 
   const storagePercent = useMemo(() => storageSummary.quota ? Math.min(100, Math.max(3, (storageSummary.used / storageSummary.quota) * 100)) : 3, [storageSummary]);
-  const groupedPerformanceAreas = useMemo(() => performanceAreaDefinitions.map((area) => ({ ...area, label: performanceAreaLabels[area.id] || area.label, items: bundle.filter((item) => item.performanceArea === area.id) })), [bundle, performanceAreaDefinitions, performanceAreaLabels]);
-  const defaultEvaluationTemplateApplied = useMemo(() => isDefaultEvaluationEvidenceTemplate(performanceAreaLabels, performanceAreaDefinitions), [performanceAreaDefinitions, performanceAreaLabels]);
-  const bundleProgress = useMemo(() => {
-    const total = groupedPerformanceAreas.length;
-    const completed = groupedPerformanceAreas.filter((area) => area.items.length > 0).length;
-    return { total, completed, percent: total ? Math.round((completed / total) * 100) : 0 };
-  }, [groupedPerformanceAreas]);
   const evidenceImageCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const image of captureImages) counts[image.metadata.evidenceId] = (counts[image.metadata.evidenceId] || 0) + 1;
     return counts;
   }, [captureImages]);
+  const groupedPerformanceAreas = useMemo(() => performanceAreaDefinitions.map((area) => {
+    const items = bundle.filter((item) => item.performanceArea === area.id);
+    const imageCount = items.reduce((sum, item) => sum + (evidenceImageCounts[item.id] || 0), 0);
+    return { ...area, label: performanceAreaLabels[area.id] || area.label, items, imageCount, status: computeAreaStatus(items.length, imageCount) };
+  }), [bundle, performanceAreaDefinitions, performanceAreaLabels, evidenceImageCounts]);
+  const defaultEvaluationTemplateApplied = useMemo(() => isDefaultEvaluationEvidenceTemplate(performanceAreaLabels, performanceAreaDefinitions), [performanceAreaDefinitions, performanceAreaLabels]);
+  const bundleProgress = useMemo(() => {
+    const total = groupedPerformanceAreas.length;
+    const completed = groupedPerformanceAreas.filter((area) => area.status === "complete").length;
+    return { total, completed, percent: total ? Math.round((completed / total) * 100) : 0 };
+  }, [groupedPerformanceAreas]);
   const previewEvidenceItem = useMemo(() => previewEvidenceId ? bundle.find((item) => item.id === previewEvidenceId) || null : null, [previewEvidenceId, bundle]);
   const previewImages = useMemo(
     () => previewEvidenceId ? captureImages.filter((image) => image.metadata.evidenceId === previewEvidenceId).sort((a, b) => a.metadata.order - b.metadata.order) : [],
@@ -1024,6 +1029,39 @@ export default function Home() {
     }
   };
 
+  /**
+   * R-NEXT-2: ينتج ملفًا واحدًا فقط (ملف-الأداء-للمراجعة.khabir.zip) يحتوي
+   * portfolio.pdf + completeness.json. لا يُنزِّل أي PDF وسيط بمفرده — التنزيل
+   * الوحيد هو الحزمة النهائية. completeness تُحسَب من groupedPerformanceAreas
+   * الحالية نفسها (نفس مصدر الحقيقة الظاهر في واجهة المعلم أعلاه).
+   */
+  const createDirectorPackageExport = async () => {
+    setExporting("director-package");
+    try {
+      const data = await getPortfolioData();
+      const { buildDirectorPackage, directorPackageDownloadName, downloadPortfolioBlob } = await import("@/lib/exportPortfolio");
+      const metadata: CompletenessMetadata = {
+        schemaVersion: 1,
+        exportId: crypto.randomUUID(),
+        generatedAt: new Date().toISOString(),
+        performanceAreas: groupedPerformanceAreas.map((area) => ({ id: area.id, label: area.label, evidenceCount: area.items.length, imageCount: area.imageCount, status: area.status })),
+        totals: {
+          areasCount: groupedPerformanceAreas.length,
+          completeCount: groupedPerformanceAreas.filter((area) => area.status === "complete").length,
+          needsReviewCount: groupedPerformanceAreas.filter((area) => area.status === "needs_review").length,
+          incompleteCount: groupedPerformanceAreas.filter((area) => area.status === "incomplete").length,
+        },
+      };
+      const blob = await buildDirectorPackage(data, metadata);
+      downloadPortfolioBlob(blob, directorPackageDownloadName());
+      showToast("تم تنزيل ملف المدير محليًا");
+    } catch {
+      showToast("تعذر إنشاء ملف المدير");
+    } finally {
+      setExporting(null);
+    }
+  };
+
   const openDirectPrint = async () => {
     const printWindow = window.open("", "_blank");
     if (!printWindow) {
@@ -1295,7 +1333,7 @@ export default function Home() {
                           <header>
                             <button className="performance-area-open" type="button" onClick={() => setOpenPerformanceAreaId((open) => open === area.id ? null : area.id)} aria-expanded={isOpen} aria-label={`فتح بند ${area.label}`}>
                               <span className="performance-area-icon"><FolderPlus size={20} /></span>
-                              <span><strong>{area.label}</strong><small>{area.items.length ? `مكتمل: ${area.items.length} ${area.items.length === 1 ? "شاهد" : "شواهد"}` : "يحتاج إلى شاهد"}</small></span>
+                              <span><strong>{area.label}</strong><small>{area.status === "complete" ? `مكتمل: ${area.items.length} ${area.items.length === 1 ? "شاهد" : "شواهد"}` : area.status === "needs_review" ? "يحتاج صورة" : "يحتاج إلى شاهد"}</small></span>
                               <ChevronDown size={17} />
                             </button>
                             <button type="button" onClick={() => addEvidence(area.id)} aria-label={`إضافة شاهد إلى ${area.label}`}><Plus size={17} /> {area.items.length ? "أضف شاهدًا" : "أضف أول شاهد"}</button>
@@ -1363,6 +1401,7 @@ export default function Home() {
                         <button type="button" onClick={() => { void createExport("pdf"); }} disabled={exporting !== null}>{exporting === "pdf" ? "جارٍ الإنشاء…" : <><FileDown size={17} /> PDF</>}</button>
                         <button type="button" onClick={() => { void createExport("word"); }} disabled={exporting !== null}>{exporting === "word" ? "جارٍ الإنشاء…" : <><FileText size={17} /> Word</>}</button>
                         <button type="button" onClick={() => setPrintSelectionOpen(true)} disabled={exporting !== null}><Printer size={17} /> طباعة</button>
+                        <button type="button" onClick={() => { void createDirectorPackageExport(); }} disabled={exporting !== null}>{exporting === "director-package" ? "جارٍ الإنشاء…" : <><FileDown size={17} /> ملف للمدير</>}</button>
                       </div>
                     </section>
                     <section className="manager-send-card" aria-labelledby="manager-send-title">

@@ -4,8 +4,10 @@
  */
 import html2canvas from "html2canvas";
 import { jsPDF } from "jspdf";
+import { zipSync } from "fflate";
 import { AlignmentType, BorderStyle, Document, ImageRun, Packer, PageBorderDisplay, PageBorderOffsetFrom, PageBorderZOrder, PageBreak, Paragraph, ShadingType, Table, TableCell, TableRow, TextRun, VerticalAlignTable, WidthType } from "docx";
 import { escapeHtml } from "./sanitize";
+import type { CompletenessMetadata } from "./completenessCheck";
 
 export type PortfolioImage = {
   blob: Blob;
@@ -201,6 +203,26 @@ export const exportPortfolioPdf = async (data: PortfolioExportData): Promise<Blo
   }
   return pdf.output("blob");
 });
+
+export const directorPackageDownloadName = () => "ملف-الأداء-للمراجعة.khabir.zip";
+
+/**
+ * R-NEXT-2: يبني حزمة المدير (PDF + completeness.json) في عملية واحدة.
+ * يستدعي exportPortfolioPdf() مرة واحدة فقط (بلا تعديل عليها، بلا تنزيل
+ * وسيط) — الـPDF الناتج منها Blob في الذاكرة فقط حتى يُضغَط داخل الحزمة.
+ * completenessMetadata تُحسَب مسبقًا من طرف المستدعي (Home.tsx) من بيانات
+ * المعلم الحقيقية، ولا تُعاد حسابها هنا لتفادي أي ازدواجية منطق.
+ */
+export const buildDirectorPackage = async (data: PortfolioExportData, completenessMetadata: CompletenessMetadata): Promise<Blob> => {
+  const pdfBlob = await exportPortfolioPdf(data);
+  const pdfBytes = new Uint8Array(await pdfBlob.arrayBuffer());
+  const metadataBytes = new TextEncoder().encode(JSON.stringify(completenessMetadata));
+  const zipped = zipSync({
+    "portfolio.pdf": pdfBytes,
+    "completeness.json": metadataBytes,
+  });
+  return new Blob([zipped], { type: "application/zip" });
+};
 
 const rtlParagraph = (text: string, options: { heading?: boolean; accent?: boolean; color?: string } = {}) => new Paragraph({
   bidirectional: true,
