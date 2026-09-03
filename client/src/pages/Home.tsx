@@ -1035,31 +1035,28 @@ export default function Home() {
    * الوحيد هو الحزمة النهائية. completeness تُحسَب من groupedPerformanceAreas
    * الحالية نفسها (نفس مصدر الحقيقة الظاهر في واجهة المعلم أعلاه).
    */
-  const createDirectorPackageExport = async () => {
-    setExporting("director-package");
-    try {
-      const data = await getPortfolioData();
-      const { buildDirectorPackage, directorPackageDownloadName, downloadPortfolioBlob } = await import("@/lib/exportPortfolio");
-      const metadata: CompletenessMetadata = {
-        schemaVersion: 1,
-        exportId: crypto.randomUUID(),
-        generatedAt: new Date().toISOString(),
-        performanceAreas: groupedPerformanceAreas.map((area) => ({ id: area.id, label: area.label, evidenceCount: area.items.length, imageCount: area.imageCount, status: area.status })),
-        totals: {
-          areasCount: groupedPerformanceAreas.length,
-          completeCount: groupedPerformanceAreas.filter((area) => area.status === "complete").length,
-          needsReviewCount: groupedPerformanceAreas.filter((area) => area.status === "needs_review").length,
-          incompleteCount: groupedPerformanceAreas.filter((area) => area.status === "incomplete").length,
-        },
-      };
-      const blob = await buildDirectorPackage(data, metadata);
-      downloadPortfolioBlob(blob, directorPackageDownloadName());
-      showToast("تم تنزيل ملف المدير محليًا");
-    } catch {
-      showToast("تعذر إنشاء ملف المدير");
-    } finally {
-      setExporting(null);
-    }
+  /**
+   * R-NEXT-4: مصدر واحد لبناء حزمة المدير (.khabir.zip) — بلا تنزيل، بلا
+   * تغيير حالة exporting. تُستدعى حصرًا من shareToManager بعد نقل الوظيفة
+   * إليها من الزر الصغير المحذوف. لا تغيير على completeness metadata أو
+   * buildDirectorPackage نفسها.
+   */
+  const buildDirectorPackageBlob = async (): Promise<Blob> => {
+    const data = await getPortfolioData();
+    const { buildDirectorPackage } = await import("@/lib/exportPortfolio");
+    const metadata: CompletenessMetadata = {
+      schemaVersion: 1,
+      exportId: crypto.randomUUID(),
+      generatedAt: new Date().toISOString(),
+      performanceAreas: groupedPerformanceAreas.map((area) => ({ id: area.id, label: area.label, evidenceCount: area.items.length, imageCount: area.imageCount, status: area.status })),
+      totals: {
+        areasCount: groupedPerformanceAreas.length,
+        completeCount: groupedPerformanceAreas.filter((area) => area.status === "complete").length,
+        needsReviewCount: groupedPerformanceAreas.filter((area) => area.status === "needs_review").length,
+        incompleteCount: groupedPerformanceAreas.filter((area) => area.status === "incomplete").length,
+      },
+    };
+    return buildDirectorPackage(data, metadata);
   };
 
   const openDirectPrint = async () => {
@@ -1112,13 +1109,14 @@ export default function Home() {
   };
 
   const shareToManager = async () => {
-    setExporting("pdf");
+    setExporting("director-package");
+    let blob: Blob | null = null;
+    let filename = "";
     try {
-      const data = await getPortfolioData();
-      const { downloadPortfolioBlob, exportPortfolioPdf, portfolioDownloadName } = await import("@/lib/exportPortfolio");
-      const blob = await exportPortfolioPdf(data);
-      const filename = portfolioDownloadName("pdf");
-      const file = new File([blob], filename, { type: "application/pdf" });
+      const { directorPackageDownloadName } = await import("@/lib/exportPortfolio");
+      blob = await buildDirectorPackageBlob();
+      filename = directorPackageDownloadName();
+      const file = new File([blob], filename, { type: "application/zip" });
       const recipientLine = managerShareProfile.name ? `إلى: ${managerShareProfile.name}` : "إلى: مدير/ة المدرسة";
       const emailLine = managerShareProfile.email ? `البريد المتفق عليه: ${managerShareProfile.email}` : "";
       const message = [managerShareProfile.message || "أرفق ملف الأداء المهني للمراجعة.", recipientLine, emailLine].filter(Boolean).join("\n");
@@ -1126,12 +1124,28 @@ export default function Home() {
         await navigator.share({ title: "ملف الأداء المهني", text: message, files: [file] });
         showToast("اختر تطبيق المشاركة والمستلم من جهازك");
       } else {
+        const { downloadPortfolioBlob } = await import("@/lib/exportPortfolio");
         downloadPortfolioBlob(blob, filename);
-        showToast("نُزّل PDF محليًا؛ أرفقه في البريد أو التطبيق الذي تختاره");
+        showToast("نُزّل ملف المدير محليًا؛ أرفقه في البريد أو التطبيق الذي تختاره");
       }
     } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") showToast("أُلغي إرسال الملف");
-      else showToast("تعذر تجهيز ملف المشاركة");
+      if (error instanceof DOMException && error.name === "AbortError") {
+        showToast("أُلغي إرسال الملف");
+      } else if (blob) {
+        // بناء الحزمة نجح فعليًا؛ فشلت فقط خطوة المشاركة تقنيًا — تنزيل fallback بدل اعتبارها فشلًا كاملًا.
+        console.error("shareToManager: navigator.share failed after successful package build, falling back to download", error);
+        try {
+          const { downloadPortfolioBlob } = await import("@/lib/exportPortfolio");
+          downloadPortfolioBlob(blob, filename);
+          showToast("تعذّرت المشاركة المباشرة؛ نُزّل ملف المدير محليًا بدلًا من ذلك");
+        } catch (downloadError) {
+          console.error("shareToManager: fallback download also failed", downloadError);
+          showToast("تعذر تجهيز ملف المدير");
+        }
+      } else {
+        console.error("shareToManager: director package build failed", error);
+        showToast("تعذر تجهيز ملف المدير");
+      }
     } finally {
       setExporting(null);
     }
@@ -1401,12 +1415,11 @@ export default function Home() {
                         <button type="button" onClick={() => { void createExport("pdf"); }} disabled={exporting !== null}>{exporting === "pdf" ? "جارٍ الإنشاء…" : <><FileDown size={17} /> PDF</>}</button>
                         <button type="button" onClick={() => { void createExport("word"); }} disabled={exporting !== null}>{exporting === "word" ? "جارٍ الإنشاء…" : <><FileText size={17} /> Word</>}</button>
                         <button type="button" onClick={() => setPrintSelectionOpen(true)} disabled={exporting !== null}><Printer size={17} /> طباعة</button>
-                        <button type="button" onClick={() => { void createDirectorPackageExport(); }} disabled={exporting !== null}>{exporting === "director-package" ? "جارٍ الإنشاء…" : <><FileDown size={17} /> ملف للمدير</>}</button>
                       </div>
                     </section>
                     <section className="manager-send-card" aria-labelledby="manager-send-title">
-                      <div className="manager-send-heading"><span><Send size={19} /></span><div><strong id="manager-send-title">إرسال نسخة للمدير</strong><small>{managerShareProfile.name ? `المستلم: ${managerShareProfile.name}` : "سيفتح جهازك تطبيقات الإرسال لاختيار التطبيق والمستلم."}</small></div></div>
-                      <button className="primary-action" type="button" disabled={exporting !== null} onClick={() => { void shareToManager(); }}><Send size={19} /> {exporting === "pdf" ? "جارٍ تجهيز PDF…" : "إرسال نسخة للمدير"}</button>
+                      <div className="manager-send-heading"><span><Send size={19} /></span><div><strong id="manager-send-title">إرسال الملف إلى المدير</strong><small>{managerShareProfile.name ? `المستلم: ${managerShareProfile.name}` : "سيتم تجهيز ملف المدير، ثم يمكنك اختيار تطبيق الإرسال والمستلم."}</small></div></div>
+                      <button className="primary-action" type="button" disabled={exporting !== null} onClick={() => { void shareToManager(); }}><Send size={19} /> {exporting === "director-package" ? "جارٍ تجهيز ملف المدير…" : "إرسال الملف إلى المدير"}</button>
                     </section>
                     <button className="collaboration-compact-action" type="button" onClick={() => setCollaborationOpen(true)}><UsersRound size={16} /> دعوات التعاون</button>
                     <p className="share-security-note"><LockKeyhole size={16} /> تُنشأ النسخة محليًا على جهازك ولا تُرفع تلقائيًا إلى أي خدمة.</p>
