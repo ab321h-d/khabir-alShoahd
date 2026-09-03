@@ -28,12 +28,20 @@ export type DirectorBackupSubmission = DirectorSubmission & { payload: string };
 
 const databaseName = "khabir-director-local";
 const storeName = "submissions";
+const teacherContactsStoreName = "teacherContacts";
+const databaseVersion = 2;
+
+/** R-NEXT-3: تطبيع مركزي لاسم المعلم — trim + دمج مسافات متكررة فقط، بلا مطابقة تقريبية (fuzzy). */
+export const normalizeTeacherName = (name: string): string => name.trim().replace(/\s+/g, " ");
+
+type TeacherContact = { normalizedName: string; whatsappNumber: string; updatedAt: string };
 
 const openDatabase = () => new Promise<IDBDatabase>((resolve, reject) => {
-  const request = indexedDB.open(databaseName, 1);
+  const request = indexedDB.open(databaseName, databaseVersion);
   request.onupgradeneeded = () => {
     const database = request.result;
     if (!database.objectStoreNames.contains(storeName)) database.createObjectStore(storeName, { keyPath: "id" });
+    if (!database.objectStoreNames.contains(teacherContactsStoreName)) database.createObjectStore(teacherContactsStoreName, { keyPath: "normalizedName" });
   };
   request.onsuccess = () => resolve(request.result);
   request.onerror = () => reject(request.error);
@@ -66,6 +74,37 @@ export const directorStore = {
   async list(): Promise<DirectorSubmission[]> {
     const database = await openDatabase();
     return closeWhenDone(database, requestValue(database.transaction(storeName, "readonly").objectStore(storeName).getAll()).then((items) => (items as StoredSubmission[]).map(publicRecord).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))));
+  },
+
+  /** R-NEXT-3: قراءة فقط، بلا حراسة (مطابق لتصنيف عمليات القراءة المعفاة في كل المشروع). */
+  async getTeacherContact(normalizedName: string): Promise<string | null> {
+    if (!normalizedName) return null;
+    const database = await openDatabase();
+    const contact = await closeWhenDone(database, requestValue(database.transaction(teacherContactsStoreName, "readonly").objectStore(teacherContactsStoreName).get(normalizedName)).catch(() => undefined)) as TeacherContact | undefined;
+    return contact?.whatsappNumber || null;
+  },
+
+  /**
+   * R-NEXT-3: fallback عند غياب Teacher Contact — يبحث في سجلات الاستيراد
+   * السابقة لنفس الاسم المُطبَّع، ويعيد أحدث رقم واتساب صالح (غير فارغ) إن
+   * وُجد. قراءة فقط، بلا حراسة.
+   */
+  async findLatestWhatsAppNumberForTeacher(normalizedName: string): Promise<string | null> {
+    if (!normalizedName) return null;
+    const submissions = await this.list();
+    const matches = submissions
+      .filter((item) => normalizeTeacherName(item.teacherName) === normalizedName && (item.whatsappNumber || "").trim().length > 0)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    return matches[0]?.whatsappNumber || null;
+  },
+
+  /** R-NEXT-3: حراسة الكتابة — upsert صريح، يمر عبر write guards الحالية. */
+  async upsertTeacherContact(normalizedName: string, whatsappNumber: string): Promise<void> {
+    if (!normalizedName || !whatsappNumber.trim()) return;
+    await assertWriteAllowed("director");
+    const database = await openDatabase();
+    const contact: TeacherContact = { normalizedName, whatsappNumber, updatedAt: new Date().toISOString() };
+    await closeWhenDone(database, requestValue(database.transaction(teacherContactsStoreName, "readwrite").objectStore(teacherContactsStoreName).put(contact)));
   },
 
   /** PHASE B.8: حراسة الكتابة (إنشاء). موقع الاستدعاء الوحيد في Director.tsx مغلَّف بـtry/catch. */
