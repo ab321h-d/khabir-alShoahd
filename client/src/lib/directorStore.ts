@@ -113,7 +113,7 @@ export const directorStore = {
     const database = await openDatabase();
     const now = new Date().toISOString();
     const item: StoredSubmission = {
-      id: crypto.randomUUID(), fileName: file.name, teacherName: teacherName.trim() || file.name.replace(/\.pdf$/i, ""), importedAt: now, updatedAt: now,
+      id: crypto.randomUUID?.() || `sub-${Date.now()}-${Math.random().toString(16).slice(2)}`, fileName: file.name, teacherName: teacherName.trim() || file.name.replace(/\.pdf$/i, ""), importedAt: now, updatedAt: now,
       size: file.size, reviewStatus: "new", reviewLevel: "", academicTerm, comment: "", whatsappNumber: "", whatsappMessage: "", pdf: file, completenessMetadata,
     };
     await closeWhenDone(database, requestValue(database.transaction(storeName, "readwrite").objectStore(storeName).put(item)));
