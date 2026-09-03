@@ -1046,7 +1046,7 @@ export default function Home() {
     const { buildDirectorPackage } = await import("@/lib/exportPortfolio");
     const metadata: CompletenessMetadata = {
       schemaVersion: 1,
-      exportId: crypto.randomUUID(),
+      exportId: crypto.randomUUID?.() || `pkg-${Date.now()}-${Math.random().toString(16).slice(2)}`,
       generatedAt: new Date().toISOString(),
       performanceAreas: groupedPerformanceAreas.map((area) => ({ id: area.id, label: area.label, evidenceCount: area.items.length, imageCount: area.imageCount, status: area.status })),
       totals: {
