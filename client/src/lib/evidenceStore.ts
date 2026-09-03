@@ -556,10 +556,8 @@ export const prototypeStore = {
     await new Promise<void>((resolve, reject) => {
       const transaction = database.transaction([STORE_NAME, IMAGE_STORE_NAME], "readwrite");
       transaction.objectStore(STORE_NAME).put(clearedDraft, DRAFT_ID);
-
       const imageStore = transaction.objectStore(IMAGE_STORE_NAME);
       idsToDelete.forEach((id) => imageStore.delete(id));
-
       transaction.oncomplete = () => {
         database.close();
         resolve();
@@ -574,6 +572,7 @@ export const prototypeStore = {
       };
     });
   },
+
   async clearAll() {
     if (typeof window !== "undefined") {
       window.localStorage.removeItem(STORAGE_KEY);
@@ -783,7 +782,9 @@ export const localImageStore = {
     return images.filter((image) => image.evidenceId === evidenceId).sort((first, second) => first.order - second.order)[0]?.blob || null;
   },
 
+  /** R-NEXT-7: حراسة الكتابة — deleteImage تحذف صورة فردية فعليًا، تُعامَل كأي كتابة تفاعلية عادية. */
   async deleteImage(id: string) {
+    await assertWriteAllowed("teacher");
     await deleteStoredImage(id);
   },
 

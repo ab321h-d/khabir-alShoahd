@@ -243,6 +243,7 @@ export default function Home() {
   const [captureImages, setCaptureImages] = useState<Array<{ metadata: LocalImageMetadata; url: string }>>([]);
   const [storageSummary, setStorageSummary] = useState({ used: 0, quota: null as number | null, imageCount: 0 });
   const [exporting, setExporting] = useState<"pdf" | "word" | "print" | "director-package" | null>(null);
+  const [preparedPdfPackage, setPreparedPdfPackage] = useState<{ blob: Blob } | null>(null);
   const [liteMode, setLiteMode] = useState(() => {
     try { return window.localStorage.getItem(liteModeStorageKey) === "1"; } catch { return false; }
   });
@@ -339,6 +340,29 @@ export default function Home() {
     [previewEvidenceId, captureImages],
   );
   const openEvidencePreview = (item: EvidenceItem) => { setPreviewEvidenceId(item.id); setPreviewImageIndex(0); };
+  /**
+   * R-NEXT-7: حذف صورة واحدة من داخل معاينة الشاهد. لا تلمس EvidenceItem ولا
+   * bundle إطلاقًا — حذف على مستوى الصورة فقط عبر localImageStore.deleteImage
+   * الموجودة أصلًا (الآن محروسة بالترخيص). previewImages تُعاد حسابها تلقائيًا
+   * (memoized على captureImages) بعد refreshCaptureMedia.
+   */
+  const deletePreviewImage = async (imageId: string, index: number) => {
+    if (!window.confirm("حذف هذه الصورة؟")) return;
+    try {
+      const wasLast = index === previewImages.length - 1;
+      await localImageStore.deleteImage(imageId);
+      const images = await localImageStore.listImagesForEvidenceIds(bundle.map((item) => item.id));
+      setCaptureImages(images);
+      setPreviewImageIndex((current) => {
+        if (index < current) return current - 1;
+        if (index === current) return wasLast ? Math.max(0, index - 1) : index;
+        return current;
+      });
+      showToast("تم حذف الصورة");
+    } catch {
+      showToast("تعذر حذف الصورة");
+    }
+  };
   const selectedPrintImages = useMemo(() => printImageSelection === null ? captureImages : captureImages.filter((image) => printImageSelection.includes(image.metadata.id)), [captureImages, printImageSelection]);
 
   const portableDraft = useMemo(() => ({
@@ -833,9 +857,13 @@ export default function Home() {
   };
 
   const deleteCaptureImage = async (id: string) => {
-    await localImageStore.deleteImage(id);
-    await refreshCaptureMedia();
-    markSaved("تم حذف الصورة من هذا الجهاز");
+    try {
+      await localImageStore.deleteImage(id);
+      await refreshCaptureMedia();
+      markSaved("تم حذف الصورة من هذا الجهاز");
+    } catch {
+      showToast("تعذر حذف الصورة");
+    }
   };
 
   const refreshSchoolLogo = async () => {
@@ -1036,10 +1064,11 @@ export default function Home() {
    * الحالية نفسها (نفس مصدر الحقيقة الظاهر في واجهة المعلم أعلاه).
    */
   /**
-   * R-NEXT-4: مصدر واحد لبناء حزمة المدير (.khabir.zip) — بلا تنزيل، بلا
-   * تغيير حالة exporting. تُستدعى حصرًا من shareToManager بعد نقل الوظيفة
-   * إليها من الزر الصغير المحذوف. لا تغيير على completeness metadata أو
-   * buildDirectorPackage نفسها.
+   * R-NEXT-4/R-NEXT-6: مصدر واحد لبناء حزمة المدير الكاملة (.khabir.zip) —
+   * بلا تنزيل، بلا تغيير حالة exporting. تُستدعى حصرًا من
+   * downloadDirectorPackage عند طلب "تنزيل الحزمة الكاملة" فقط (R-NEXT-6/E1:
+   * ZIP لم يعد يُبنى تلقائيًا عند التجهيز للمشاركة، لأن navigator.share
+   * لا يقبل ZIP بموثوقية — راجع buildDirectorPackage نفسها للتفاصيل).
    */
   const buildDirectorPackageBlob = async (): Promise<Blob> => {
     const data = await getPortfolioData();
@@ -1108,44 +1137,81 @@ export default function Home() {
     }
   };
 
-  const shareToManager = async () => {
+  /**
+   * R-NEXT-6 / E1: المرحلة الأولى — تبني PDF فقط (لا ZIP إطلاقًا)، وتُخزِّنه
+   * في الحالة للمشاركة اللاحقة. لا استدعاء لـnavigator.share هنا — الهدف
+   * عزل كل العمل غير المتزامن عن لحظة استدعاء navigator.share نفسها.
+   */
+  const prepareDirectorPackage = async () => {
     setExporting("director-package");
-    let blob: Blob | null = null;
-    let filename = "";
     try {
-      const { directorPackageDownloadName } = await import("@/lib/exportPortfolio");
-      blob = await buildDirectorPackageBlob();
-      filename = directorPackageDownloadName();
-      const file = new File([blob], filename, { type: "application/zip" });
-      const recipientLine = managerShareProfile.name ? `إلى: ${managerShareProfile.name}` : "إلى: مدير/ة المدرسة";
-      const emailLine = managerShareProfile.email ? `البريد المتفق عليه: ${managerShareProfile.email}` : "";
-      const message = [managerShareProfile.message || "أرفق ملف الأداء المهني للمراجعة.", recipientLine, emailLine].filter(Boolean).join("\n");
+      const data = await getPortfolioData();
+      const { exportPortfolioPdf } = await import("@/lib/exportPortfolio");
+      const blob = await exportPortfolioPdf(data);
+      setPreparedPdfPackage({ blob });
+      showToast("تم تجهيز ملف PDF");
+    } catch (error) {
+      console.error("prepareDirectorPackage: failed to build PDF for sharing", error);
+      showToast("تعذر تجهيز ملف المدير");
+    } finally {
+      setExporting(null);
+    }
+  };
+
+  /**
+   * R-NEXT-6 / E1: المرحلة الثانية — تُستدعى مباشرة من onClick لزر "مشاركة
+   * الملف"، بلا أي await قبل navigator.share. تشارك PDF فقط (application/pdf)
+   * — ثبت بالاختبار الحي (D5/D6) أن Web Share API لا يقبل application/zip
+   * بموثوقية على Android/Chromium رغم نجاح canShare الشكلي، بينما PDF نوع
+   * مدعوم فعليًا وموثوقًا. لا title/text (غير ضروريين، ثبت عدم تأثيرهما).
+   */
+  const shareDirectorPackage = async () => {
+    if (!preparedPdfPackage) return;
+    const { blob } = preparedPdfPackage;
+    const file = new File([blob], "ملف-الأداء-للمراجعة.pdf", { type: "application/pdf" });
+    try {
       if (navigator.canShare?.({ files: [file] })) {
-        await navigator.share({ title: "ملف الأداء المهني", text: message, files: [file] });
+        await navigator.share({ files: [file] });
         showToast("اختر تطبيق المشاركة والمستلم من جهازك");
       } else {
         const { downloadPortfolioBlob } = await import("@/lib/exportPortfolio");
-        downloadPortfolioBlob(blob, filename);
-        showToast("نُزّل ملف المدير محليًا؛ أرفقه في البريد أو التطبيق الذي تختاره");
+        downloadPortfolioBlob(blob, "ملف-الأداء-للمراجعة.pdf");
+        showToast("نُزّل ملف PDF محليًا؛ أرفقه في البريد أو التطبيق الذي تختاره");
       }
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         showToast("أُلغي إرسال الملف");
-      } else if (blob) {
-        // بناء الحزمة نجح فعليًا؛ فشلت فقط خطوة المشاركة تقنيًا — تنزيل fallback بدل اعتبارها فشلًا كاملًا.
-        console.error("shareToManager: navigator.share failed after successful package build, falling back to download", error);
+      } else {
+        console.error("shareDirectorPackage: navigator.share failed after successful PDF build, falling back to download", error);
         try {
           const { downloadPortfolioBlob } = await import("@/lib/exportPortfolio");
-          downloadPortfolioBlob(blob, filename);
-          showToast("تعذّرت المشاركة المباشرة؛ نُزّل ملف المدير محليًا بدلًا من ذلك");
+          downloadPortfolioBlob(blob, "ملف-الأداء-للمراجعة.pdf");
+          showToast("تعذّرت المشاركة المباشرة؛ نُزّل ملف PDF محليًا بدلًا من ذلك");
         } catch (downloadError) {
-          console.error("shareToManager: fallback download also failed", downloadError);
+          console.error("shareDirectorPackage: fallback download also failed", downloadError);
           showToast("تعذر تجهيز ملف المدير");
         }
-      } else {
-        console.error("shareToManager: director package build failed", error);
-        showToast("تعذر تجهيز ملف المدير");
       }
+    }
+  };
+
+  /**
+   * R-NEXT-6 / E1: زر ثانوي "تنزيل الحزمة الكاملة" — يبني ZIP الكامل
+   * (portfolio.pdf + completeness.json) عند الطلب فقط، لا يُبنى مسبقًا عند
+   * التجهيز للمشاركة. لا مشاركة له عبر navigator.share إطلاقًا (ZIP غير
+   * مدعوم بموثوقية)، تنزيل محلي مباشر فقط عبر buildDirectorPackageBlob
+   * الحالية دون أي تعديل عليها.
+   */
+  const downloadDirectorPackage = async () => {
+    setExporting("director-package");
+    try {
+      const { directorPackageDownloadName, downloadPortfolioBlob } = await import("@/lib/exportPortfolio");
+      const blob = await buildDirectorPackageBlob();
+      downloadPortfolioBlob(blob, directorPackageDownloadName());
+      showToast("تم تنزيل الحزمة الكاملة (تتضمن بيانات فحص الاكتمال)");
+    } catch (error) {
+      console.error("downloadDirectorPackage: failed to build full ZIP package", error);
+      showToast("تعذر تجهيز الحزمة الكاملة");
     } finally {
       setExporting(null);
     }
@@ -1418,8 +1484,16 @@ export default function Home() {
                       </div>
                     </section>
                     <section className="manager-send-card" aria-labelledby="manager-send-title">
-                      <div className="manager-send-heading"><span><Send size={19} /></span><div><strong id="manager-send-title">إرسال الملف إلى المدير</strong><small>{managerShareProfile.name ? `المستلم: ${managerShareProfile.name}` : "سيتم تجهيز ملف المدير، ثم يمكنك اختيار تطبيق الإرسال والمستلم."}</small></div></div>
-                      <button className="primary-action" type="button" disabled={exporting !== null} onClick={() => { void shareToManager(); }}><Send size={19} /> {exporting === "director-package" ? "جارٍ تجهيز ملف المدير…" : "إرسال الملف إلى المدير"}</button>
+                      <div className="manager-send-heading"><span><Send size={19} /></span><div><strong id="manager-send-title">{preparedPdfPackage ? "تم تجهيز ملف PDF" : "تجهيز ملف المشاركة"}</strong><small>{preparedPdfPackage ? "اضغط مشاركة الملف لاختيار تطبيق الإرسال والمستلم." : managerShareProfile.name ? `المستلم: ${managerShareProfile.name}` : "سيتم تجهيز ملف PDF، ثم يمكنك اختيار تطبيق الإرسال والمستلم."}</small></div></div>
+                      {!preparedPdfPackage ? (
+                        <button className="primary-action" type="button" disabled={exporting !== null} onClick={() => { void prepareDirectorPackage(); }}>{exporting === "director-package" ? "جارٍ التجهيز…" : "تجهيز ملف المشاركة"}</button>
+                      ) : (
+                        <>
+                          <button className="primary-action" type="button" onClick={() => { void shareDirectorPackage(); }}><Send size={19} /> مشاركة الملف</button>
+                          <button className="secondary-action" type="button" disabled={exporting !== null} onClick={() => { void downloadDirectorPackage(); }}>{exporting === "director-package" ? "جارٍ تجهيز الحزمة…" : "تنزيل الحزمة الكاملة"}</button>
+                          <small className="manager-package-note">الحزمة الكاملة (ZIP) تتضمن أيضًا بيانات فحص الاكتمال للمدير.</small>
+                        </>
+                      )}
                     </section>
                     <button className="collaboration-compact-action" type="button" onClick={() => setCollaborationOpen(true)}><UsersRound size={16} /> دعوات التعاون</button>
                     <p className="share-security-note"><LockKeyhole size={16} /> تُنشأ النسخة محليًا على جهازك ولا تُرفع تلقائيًا إلى أي خدمة.</p>
@@ -1497,15 +1571,23 @@ export default function Home() {
                   <p className="text-sm text-muted-foreground">لا توجد صور مرفقة بهذا الشاهد</p>
                 ) : (
                   <>
-                    <div className="flex justify-center">
+                    <div className="relative flex justify-center">
                       <img src={previewImages[Math.min(previewImageIndex, previewImages.length - 1)]?.url} alt={`صورة الشاهد: ${previewEvidenceItem.title}`} className="w-auto h-auto max-w-full max-h-[40vh] object-contain rounded-lg border" />
+                      <button type="button" onClick={() => { const effectiveIndex = Math.min(previewImageIndex, previewImages.length - 1); void deletePreviewImage(previewImages[effectiveIndex].metadata.id, effectiveIndex); }} aria-label="حذف هذه الصورة" className="absolute top-2 left-2 flex h-8 w-8 items-center justify-center rounded-full bg-destructive text-destructive-foreground shadow">
+                        <Trash2 size={15} />
+                      </button>
                     </div>
                     {previewImages.length > 1 && (
                       <div className="flex justify-center gap-2 overflow-x-auto">
                         {previewImages.map((image, index) => (
-                          <button key={image.metadata.id} type="button" onClick={() => setPreviewImageIndex(index)} aria-label={`عرض الصورة ${index + 1}`} className={`shrink-0 rounded-md border ${index === previewImageIndex ? "ring-2 ring-primary" : ""}`}>
-                            <img src={image.url} alt="" className="h-14 w-14 object-cover rounded-md" />
-                          </button>
+                          <div key={image.metadata.id} className="relative shrink-0">
+                            <button type="button" onClick={() => setPreviewImageIndex(index)} aria-label={`عرض الصورة ${index + 1}`} className={`rounded-md border ${index === previewImageIndex ? "ring-2 ring-primary" : ""}`}>
+                              <img src={image.url} alt="" className="h-14 w-14 object-cover rounded-md" />
+                            </button>
+                            <button type="button" onClick={(event) => { event.stopPropagation(); void deletePreviewImage(image.metadata.id, index); }} aria-label={`حذف الصورة ${index + 1}`} className="absolute -top-1.5 -right-1.5 flex h-6 w-6 items-center justify-center rounded-full bg-destructive text-destructive-foreground shadow">
+                              <Trash2 size={13} />
+                            </button>
+                          </div>
                         ))}
                       </div>
                     )}
