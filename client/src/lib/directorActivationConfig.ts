@@ -11,4 +11,4 @@
  * المستودع (Phase منفصلة مستقبلية). طالما القيمة null، أي محاولة تفعيل
  * تفشل بوضوح (fail-closed) — لا تفعيل غير مقصود ممكن قبل التزويد الفعلي.
  */
-export const DIRECTOR_ACTIVATION_PUBLIC_KEY_JWK: JsonWebKey | null = null;
+export const DIRECTOR_ACTIVATION_PUBLIC_KEY_JWK: JsonWebKey | null = { key_ops: ["verify"], ext: true, kty: "EC", x: "S-o7tXDPY8yJwwcXQgECL3C3j06mljPjpo3RHPs152c", y: "UmWiz5hEwkFJ4Ih1NudghcvwykW5m6tcvqkX6MedVLo", crv: "P-256" };

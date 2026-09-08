@@ -119,3 +119,4 @@ client/public/__manus__/version.json
 
 # License signing tool output (private key material — never committed)
 scripts/license-tools/.local-keys/
+tools/director-activation/.local-keys/
