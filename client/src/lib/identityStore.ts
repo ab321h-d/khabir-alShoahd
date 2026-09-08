@@ -31,7 +31,27 @@ export interface UserIdentity {
 
 const databaseName = "khabir-identity-local";
 const storeName = "identities";
-const databaseVersion = 1;
+const credentialsStoreName = "directorCredentials";
+const devicesStoreName = "trustedDevices";
+const consumedActivationsStoreName = "consumedActivations";
+const databaseVersion = 3;
+
+export interface DirectorCredentialRecord {
+  userId: string;
+  salt: string;
+  derivedHash: string;
+  iterations: number;
+  algorithmVersion: 1;
+  failedAttempts: number;
+  lockUntil: string | null; // ISO timestamp أو null
+  updatedAt: string;
+}
+
+export interface TrustedDeviceRecord {
+  deviceId: string;
+  userId: string;
+  registeredAt: string;
+}
 
 const validStages: readonly SchoolStage[] = ["elementary", "middle", "secondary"];
 const validRoles: readonly IdentityRole[] = ["teacher", "director"];
@@ -77,10 +97,24 @@ const openDatabase = () => new Promise<IDBDatabase>((resolve, reject) => {
   const request = indexedDB.open(databaseName, databaseVersion);
   request.onupgradeneeded = () => {
     const database = request.result;
+    // PHASE ID-1: يُحافَظ عليه دائمًا — أي ترقية إصدار لاحقة لا تحذفه ولا تعيد إنشاءه.
     if (!database.objectStoreNames.contains(storeName)) {
       const store = database.createObjectStore(storeName, { keyPath: "userId" });
       store.createIndex("byScope", ["schoolId", "stage"], { unique: false });
       store.createIndex("byRole", "role", { unique: false });
+    }
+    // PHASE ID-2: مخازن جديدة إضافية فقط — لا تلمس store الهوية أعلاه.
+    if (!database.objectStoreNames.contains(credentialsStoreName)) {
+      database.createObjectStore(credentialsStoreName, { keyPath: "userId" });
+    }
+    if (!database.objectStoreNames.contains(devicesStoreName)) {
+      const deviceStore = database.createObjectStore(devicesStoreName, { keyPath: "deviceId" });
+      deviceStore.createIndex("byUser", "userId", { unique: false });
+    }
+    // PHASE ID-2A.1: مخزن إضافي فقط — تتبّع محلي لبيانات اعتماد تفعيل
+    // استُهلِكت على هذا التثبيت، لمنع إعادة استخدامها محليًا (لا عبر أجهزة).
+    if (!database.objectStoreNames.contains(consumedActivationsStoreName)) {
+      database.createObjectStore(consumedActivationsStoreName, { keyPath: "activationId" });
     }
   };
   request.onsuccess = () => resolve(request.result);
@@ -160,5 +194,44 @@ export const identityStore = {
       await requestValue(store.put(next));
       return next;
     })());
+  },
+
+  // ===== PHASE ID-2: بيانات اعتماد PIN المدير + الأجهزة الموثوقة =====
+
+  async getDirectorCredential(userId: string): Promise<DirectorCredentialRecord | null> {
+    const database = await openDatabase();
+    const result = await closeWhenDone(database, requestValue(database.transaction(credentialsStoreName, "readonly").objectStore(credentialsStoreName).get(userId)));
+    return (result as DirectorCredentialRecord | undefined) || null;
+  },
+
+  async putDirectorCredential(record: DirectorCredentialRecord): Promise<void> {
+    const database = await openDatabase();
+    await closeWhenDone(database, requestValue(database.transaction(credentialsStoreName, "readwrite").objectStore(credentialsStoreName).put(record)));
+  },
+
+  async getTrustedDevice(deviceId: string): Promise<TrustedDeviceRecord | null> {
+    const database = await openDatabase();
+    const result = await closeWhenDone(database, requestValue(database.transaction(devicesStoreName, "readonly").objectStore(devicesStoreName).get(deviceId)));
+    return (result as TrustedDeviceRecord | undefined) || null;
+  },
+
+  async registerTrustedDevice(deviceId: string, userId: string): Promise<TrustedDeviceRecord> {
+    const record: TrustedDeviceRecord = { deviceId, userId, registeredAt: new Date().toISOString() };
+    const database = await openDatabase();
+    await closeWhenDone(database, requestValue(database.transaction(devicesStoreName, "readwrite").objectStore(devicesStoreName).put(record)));
+    return record;
+  },
+
+  // ===== PHASE ID-2A.1: تتبّع استهلاك بيانات اعتماد التفعيل (محلي فقط) =====
+
+  async isActivationConsumed(activationId: string): Promise<boolean> {
+    const database = await openDatabase();
+    const result = await closeWhenDone(database, requestValue(database.transaction(consumedActivationsStoreName, "readonly").objectStore(consumedActivationsStoreName).get(activationId)));
+    return result !== undefined;
+  },
+
+  async markActivationConsumed(activationId: string): Promise<void> {
+    const database = await openDatabase();
+    await closeWhenDone(database, requestValue(database.transaction(consumedActivationsStoreName, "readwrite").objectStore(consumedActivationsStoreName).add({ activationId, consumedAt: new Date().toISOString() })));
   },
 };
