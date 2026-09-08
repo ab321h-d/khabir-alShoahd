@@ -8,6 +8,7 @@ import { appAppearance, appPreferenceKeys, appProtection } from "./lib/appPrefer
 import { brandEmblemUrl, brandWordmarkUrl } from "./lib/brand";
 import { LicenseProvider } from "./contexts/LicenseContext";
 import { LicenseActivation } from "./components/LicenseActivation";
+import { DirectorAuthGate } from "./components/DirectorAuthGate";
 
 const Home = isDirectorStandalone ? null : lazy(() => import("./pages/Home"));
 const Director = isTeacherStandalone ? null : lazy(() => import("./pages/Director"));
@@ -15,13 +16,13 @@ const Director = isTeacherStandalone ? null : lazy(() => import("./pages/Directo
 function Router() {
   if (appVariant === "director") {
     if (!Director) return <NotFound />;
-    return <Suspense fallback={<main dir="rtl" className="director-loading">جارٍ فتح مساحة المدير…</main>}><Director /></Suspense>;
+    return <Suspense fallback={<main dir="rtl" className="director-loading">جارٍ فتح مساحة المدير…</main>}><DirectorAuthGate><Director /></DirectorAuthGate></Suspense>;
   }
   if (!Home) return <NotFound />;
   return (
     <Switch>
       <Route path={"/"}><Suspense fallback={<main dir="rtl" className="director-loading">جارٍ فتح التطبيق…</main>}><Home /></Suspense></Route>
-      {!isTeacherStandalone && Director && <Route path={"/director"}><Suspense fallback={<main dir="rtl" className="director-loading">جارٍ فتح مساحة المدير…</main>}><Director /></Suspense></Route>}
+      {!isTeacherStandalone && Director && <Route path={"/director"}><Suspense fallback={<main dir="rtl" className="director-loading">جارٍ فتح مساحة المدير…</main>}><DirectorAuthGate><Director /></DirectorAuthGate></Suspense></Route>}
       <Route path={"/404"} component={NotFound} />
       {/* Final fallback route */}
       <Route component={NotFound} />

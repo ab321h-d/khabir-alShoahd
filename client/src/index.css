@@ -779,3 +779,17 @@ label.field-card { gap: 10px; }
   .header-brand-copy small { color: #0b8286; font-size: .64rem; }
   .icon-button, .header-settings-button { width: 36px; height: 36px; color: #0b5870; }
 }
+/* PHASE ID-2B — أضِف هذه القواعد فقط إلى نهاية client/src/index.css الحالي.
+   لا تستبدل الملف بالكامل. لا تحذف أو تعدّل أي قاعدة موجودة. */
+
+.director-auth-loading { display: grid; min-height: 100vh; place-items: center; padding: 24px; color: var(--muted-ink); font-size: .8rem; background: var(--cream); }
+.director-auth-screen { display: grid; min-height: 100vh; place-items: center; padding: 24px; background: radial-gradient(circle at 15% 20%, rgba(234,244,236,.85), transparent 24rem), radial-gradient(circle at 90% 84%, rgba(234,244,255,.9), transparent 24rem), var(--cream); }
+.director-auth-card { display: grid; width: min(100%, 390px); gap: 11px; padding: 30px; border: 1px solid rgba(255,255,255,.85); border-radius: 24px; color: var(--ink); background: rgba(255,253,249,.95); box-shadow: 0 22px 65px rgba(24,61,90,.16); }
+.director-auth-card h1 { margin: 0; font-size: 1.2rem; }
+.director-auth-card p { margin: 0; color: var(--muted-ink); font-size: .74rem; }
+.director-auth-card label { display: grid; gap: 6px; margin-top: 7px; color: #577084; font-size: .64rem; }
+.director-auth-card input, .director-auth-card select { min-height: 42px; border: 1px solid #cddfea; border-radius: 11px; padding: 9px 11px; color: var(--ink); outline-color: var(--lesson); font: inherit; background: #fff; }
+.director-auth-error { padding: 9px 10px; border-radius: 10px; color: #a75248; background: #fff1ef; font-size: .65rem; }
+.director-auth-cooldown { color: var(--muted-ink); font-size: .68rem; }
+.director-auth-card button { min-height: 44px; border: 0; border-radius: 11px; color: #fff; background: var(--lesson); cursor: pointer; font: inherit; font-size: .73rem; font-weight: 800; }
+.director-auth-card button:disabled { cursor: wait; opacity: .64; }

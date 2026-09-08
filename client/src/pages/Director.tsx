@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, BarChart3, Check, Clipboard, Download, FileSpreadsheet, FileText, FolderOpen, LayoutDashboard, LockKeyhole, MessageCircle, PenLine, Printer, Search, Send, Sparkles, Star, Trash2, Upload, UserRound, X } from "lucide-react";
 import { directorStore, normalizeTeacherName, type AcademicTerm, type DirectorSubmission, type ReviewLevel, type ReviewStatus } from "@/lib/directorStore";
+import { useDirectorAuth } from "@/components/DirectorAuthGate";
 import { validateCompletenessMetadata, type CompletenessStatus } from "@/lib/completenessCheck";
 import { buildReportFilterDescription, filterReportRows, hasInvalidDateRange, type ReportScope } from "@/lib/reportFilters";
 import { escapeHtml } from "@/lib/sanitize";
@@ -113,6 +114,7 @@ const buildAggregateReportPdf = async (items: DirectorSubmission[], stats: Aggre
 };
 
 export default function Director() {
+  const { lock } = useDirectorAuth();
   const inputRef = useRef<HTMLInputElement>(null);
   const [submissions, setSubmissions] = useState<DirectorSubmission[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -376,7 +378,7 @@ export default function Director() {
   };
 
   return <main className="director-app" dir="rtl">
-    <header className="director-header"><a href="/" aria-label={isDirectorStandalone ? "الصفحة الرئيسية لتطبيق المدير" : "العودة إلى تطبيق المعلم"}><ArrowRight size={20} /></a><div className="director-brand"><img src={brandEmblemUrl} alt="" aria-hidden="true" /><span><strong>خبير الشواهد</strong><small>مساحة المدير</small></span></div><button className="director-collaboration-button" type="button" onClick={() => setCollaborationOpen(true)} aria-label="دعوات التعاون"><UserRound size={16} /> دعوة</button></header>
+    <header className="director-header"><a href="/" aria-label={isDirectorStandalone ? "الصفحة الرئيسية لتطبيق المدير" : "العودة إلى تطبيق المعلم"}><ArrowRight size={20} /></a><div className="director-brand"><img src={brandEmblemUrl} alt="" aria-hidden="true" /><span><strong>خبير الشواهد</strong><small>مساحة المدير</small></span></div><button className="director-collaboration-button" type="button" onClick={() => setCollaborationOpen(true)} aria-label="دعوات التعاون"><UserRound size={16} /> دعوة</button><button className="director-collaboration-button" type="button" onClick={lock} aria-label="قفل حساب المدير"><LockKeyhole size={16} /> قفل الحساب</button></header>
     <section className="director-shell">
       <aside className="director-rail"><div className="director-intro"><span className="director-kicker">مساحة مراجعة هادئة</span><h1>قيّم الإنجاز،<br />بوضوح وبساطة.</h1><p>استورد نسخة PDF التي تصلك من المعلم، ثم سجّل تقييمك. لا تُرفع الملفات أو التعليقات إلى أي خدمة.</p></div><button className="director-import-button" type="button" onClick={() => setImportOpen(true)}><Upload size={19} /> استيراد ملف PDF</button><div className="director-trust"><LockKeyhole size={18} /><span><strong>لا حسابات ولا مزامنة</strong><small>كل ملف وتقييم يبقيان على هذا الجهاز.</small></span></div></aside>
       <section className="director-workspace">
