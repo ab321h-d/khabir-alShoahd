@@ -33,10 +33,10 @@ describe("assertWriteAllowedSync — محاكاة ترخيص مدفوع", () => 
 describe("حراسة المعلم والمدير منفصلتان", () => {
   beforeEach(() => resetWriteGuardCacheForTests());
 
-  it("حظر نسخة المعلم لا يحظر نسخة المدير التي لم تُفحص بعد", () => {
+  it("حظر نسخة المعلم لا يُغيِّر أن نسخة المدير غير المحمَّلة بعد تبقى محظورة (fail-closed)", () => {
     setCachedWriteStatus("teacher", false);
     expect(isWriteAllowedSync("teacher")).toBe(false);
-    expect(isWriteAllowedSync("director")).toBe(true);
+    expect(isWriteAllowedSync("director")).toBe(false);
   });
 });
 

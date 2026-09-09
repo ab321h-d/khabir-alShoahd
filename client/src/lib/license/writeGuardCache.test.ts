@@ -4,9 +4,9 @@ import { isWriteAllowedSync, resetWriteGuardCacheForTests, setCachedWriteStatus 
 describe("ذاكرة الحراسة المتزامنة", () => {
   beforeEach(() => resetWriteGuardCacheForTests());
 
-  it("متفائلة (تسمح) قبل أي تحديث للذاكرة", () => {
-    expect(isWriteAllowedSync("teacher")).toBe(true);
-    expect(isWriteAllowedSync("director")).toBe(true);
+  it("متشائمة/Fail-Closed — تمنع الكتابة لكلا النطاقين قبل أي تحديث للذاكرة", () => {
+    expect(isWriteAllowedSync("teacher")).toBe(false);
+    expect(isWriteAllowedSync("director")).toBe(false);
   });
 
   it("تعكس حالة المنع فور تحديثها لنطاق معيّن", () => {
@@ -20,9 +20,9 @@ describe("ذاكرة الحراسة المتزامنة", () => {
     expect(isWriteAllowedSync("teacher")).toBe(true);
   });
 
-  it("حالة المعلم والمدير مستقلتان تمامًا في الذاكرة إن لم يُحدَّث أحدهما بعد", () => {
-    setCachedWriteStatus("teacher", false);
-    expect(isWriteAllowedSync("teacher")).toBe(false);
-    expect(isWriteAllowedSync("director")).toBe(true);
+  it("حالة المعلم والمدير مستقلتان تمامًا: تفعيل أحدهما لا يُفعِّل الآخر غير المحمَّل بعد (يبقى denied، fail-closed)", () => {
+    setCachedWriteStatus("teacher", true);
+    expect(isWriteAllowedSync("teacher")).toBe(true);
+    expect(isWriteAllowedSync("director")).toBe(false);
   });
 });
