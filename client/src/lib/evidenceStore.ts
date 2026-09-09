@@ -520,20 +520,27 @@ export const prototypeStore = {
     void queueIndexedDraftWrite(next);
   },
 
+  /** PHASE LIC-3: حراسة الكتابة — كانت غائبة. مسار مستخدَم فقط في استعادة نسخة احتياطية. */
   async saveAsync(draft: PrototypeDraft) {
     if (typeof window === "undefined") return;
+    await assertWriteAllowed("teacher");
     const next = { ...draft, updatedAt: new Date().toISOString() };
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
     await queueIndexedDraftWrite(next);
   },
 
+  /** PHASE LIC-3: حراسة الكتابة (صامتة، بنفس نمط save() — لا ضمان لوجود try/catch عند كل مستدعٍ). */
   clear() {
-    if (typeof window !== "undefined") window.localStorage.removeItem(STORAGE_KEY);
+    if (typeof window === "undefined") return;
+    if (!isWriteAllowedSync("teacher")) return;
+    window.localStorage.removeItem(STORAGE_KEY);
     void clearIndexedDraft();
     void deleteStoredImage("capture-image");
   },
 
+  /** PHASE LIC-3: حراسة الكتابة — كانت غائبة، تمسح كل الشواهد والصور بلا فحص. */
   async clearEvidenceImages() {
+    await assertWriteAllowed("teacher");
     const protectedEvidenceIds = new Set(["school-profile"]);
     if (typeof window === "undefined") return;
 
@@ -573,7 +580,9 @@ export const prototypeStore = {
     });
   },
 
+  /** PHASE LIC-3: حراسة الكتابة — كانت غائبة، تمسح كل بيانات المعلم محليًا بلا فحص. */
   async clearAll() {
+    await assertWriteAllowed("teacher");
     if (typeof window !== "undefined") {
       window.localStorage.removeItem(STORAGE_KEY);
       window.localStorage.removeItem(COVER_PRESET_KEY);
@@ -788,12 +797,16 @@ export const localImageStore = {
     await deleteStoredImage(id);
   },
 
+  /** PHASE LIC-3: حراسة الكتابة — كانت غائبة. تُحمي أيضًا deleteCapture()/removeEvidence() (Home.tsx) تلقائيًا لأنهما تستدعيانها فقط، بلا mutation إضافي خاص بهما — صفر حراسة مزدوجة لازمة عندهما. */
   async deleteEvidenceImages(evidenceId = "capture-evidence") {
+    await assertWriteAllowed("teacher");
     const images = await getAllStoredImages();
     await Promise.all(images.filter((image) => image.evidenceId === evidenceId).map((image) => deleteStoredImage(image.id)));
   },
 
+  /** PHASE LIC-3: حراسة الكتابة — كانت غائبة. مسار مستخدَم فقط في استعادة نسخة احتياطية. */
   async restoreBackupImages(images: BackupImage[]) {
+    await assertWriteAllowed("teacher");
     await restoreStoredImages(images);
   },
 
@@ -820,6 +833,7 @@ export const localImageStore = {
     return image || null;
   },
 
+  /** PHASE LIC-3: صفر guard مباشر هنا عمدًا — الدالة الوحيدة المُستدعاة (deleteEvidenceImages) محمية بالفعل، وهي الـmutation الحقيقية الوحيدة؛ حراسة مزدوجة هنا زائدة بلا فائدة. */
   async deleteCapture() {
     await this.deleteEvidenceImages();
   },

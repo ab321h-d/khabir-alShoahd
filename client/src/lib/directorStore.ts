@@ -194,12 +194,16 @@ export const directorStore = {
     return closeWhenDone(database, requestValue(database.transaction(storeName, "readonly").objectStore(storeName).get(id)).then((item) => (item as StoredSubmission | undefined)?.pdf || null));
   },
 
+  /** PHASE LIC-3: حراسة الكتابة — حذف تسليم كامل، بلا استثناء (كانت غائبة). */
   async remove(id: string) {
+    await assertWriteAllowed("director");
     const database = await openDatabase();
     await closeWhenDone(database, requestValue(database.transaction(storeName, "readwrite").objectStore(storeName).delete(id)));
   },
 
+  /** PHASE LIC-3: حراسة الكتابة — مسح كل تسليمات المدير (كانت غائبة). */
   async clearAll() {
+    await assertWriteAllowed("director");
     const database = await openDatabase();
     await closeWhenDone(database, requestValue(database.transaction(storeName, "readwrite").objectStore(storeName).clear()));
   },
@@ -210,7 +214,14 @@ export const directorStore = {
     return Promise.all(submissions.map(async ({ pdf, ...record }) => ({ ...record, payload: toBase64(await pdf.arrayBuffer()) })));
   },
 
+  /**
+   * PHASE LIC-3: حراسة الكتابة — كانت غائبة تمامًا، مما يسمح باستعادة نسخة
+   * احتياطية كاملة (تمسح ثم تكتب كل السجلات) بلا أي فحص ترخيص. الفحص أول
+   * سطر، قبل فتح قاعدة البيانات أو بدء أي معاملة — صفر بداية جزئية للاستعادة
+   * قبل الرفض المحتمل.
+   */
   async restoreBackup(records: DirectorBackupSubmission[]) {
+    await assertWriteAllowed("director");
     const database = await openDatabase();
     await new Promise<void>((resolve, reject) => {
       const transaction = database.transaction(storeName, "readwrite");
