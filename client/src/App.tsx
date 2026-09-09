@@ -9,6 +9,7 @@ import { brandEmblemUrl, brandWordmarkUrl } from "./lib/brand";
 import { LicenseProvider } from "./contexts/LicenseContext";
 import { LicenseActivation } from "./components/LicenseActivation";
 import { DirectorAuthGate } from "./components/DirectorAuthGate";
+import { TeacherAuthGate } from "./components/TeacherAuthGate";
 
 const Home = isDirectorStandalone ? null : lazy(() => import("./pages/Home"));
 const Director = isTeacherStandalone ? null : lazy(() => import("./pages/Director"));
@@ -21,7 +22,7 @@ function Router() {
   if (!Home) return <NotFound />;
   return (
     <Switch>
-      <Route path={"/"}><Suspense fallback={<main dir="rtl" className="director-loading">جارٍ فتح التطبيق…</main>}><Home /></Suspense></Route>
+      <Route path={"/"}><Suspense fallback={<main dir="rtl" className="director-loading">جارٍ فتح التطبيق…</main>}><TeacherAuthGate><Home /></TeacherAuthGate></Suspense></Route>
       {!isTeacherStandalone && Director && <Route path={"/director"}><Suspense fallback={<main dir="rtl" className="director-loading">جارٍ فتح مساحة المدير…</main>}><DirectorAuthGate><Director /></DirectorAuthGate></Suspense></Route>}
       <Route path={"/404"} component={NotFound} />
       {/* Final fallback route */}
