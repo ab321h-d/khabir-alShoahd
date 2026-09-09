@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, BarChart3, Check, Clipboard, Download, FileSpreadsheet, FileText, FolderOpen, LayoutDashboard, LockKeyhole, MessageCircle, PenLine, Printer, Search, Send, Sparkles, Star, Trash2, Upload, UserRound, X } from "lucide-react";
 import { directorStore, normalizeTeacherName, type AcademicTerm, type DirectorSubmission, type ReviewLevel, type ReviewStatus } from "@/lib/directorStore";
+import { resolveStableTeacherIdentity, validateTeacherIdentityMetadata } from "@/lib/teacherIdentityImport";
 import { useDirectorAuth } from "@/components/DirectorAuthGate";
 import { validateCompletenessMetadata, type CompletenessStatus } from "@/lib/completenessCheck";
 import { buildReportFilterDescription, filterReportRows, hasInvalidDateRange, type ReportScope } from "@/lib/reportFilters";
@@ -214,6 +215,7 @@ export default function Director() {
     try {
       let pdfFile = file;
       let completenessMetadata: DirectorSubmission["completenessMetadata"] = null;
+      let teacherIdentity: Parameters<typeof directorStore.save>[4] = null;
 
       if (isZipPackage) {
         const { unzipSync } = await import("fflate");
@@ -240,9 +242,21 @@ export default function Director() {
             completenessMetadata = null;
           }
         }
+        // PHASE ID-3D.2: identity.json اختيارية تمامًا — غيابها/تلفها/عدم
+        // دعم إصدارها/عدم تطابقها مع completeness.json لا يوقف الاستيراد
+        // إطلاقًا، فقط يعني عدم وجود هوية ثابتة لهذا التسليم (fail-safe).
+        const identityBytes = unzipped["identity.json"];
+        if (identityBytes) {
+          try {
+            const parsedIdentity = validateTeacherIdentityMetadata(JSON.parse(new TextDecoder().decode(identityBytes)));
+            teacherIdentity = resolveStableTeacherIdentity(parsedIdentity, completenessMetadata);
+          } catch {
+            teacherIdentity = null;
+          }
+        }
       }
 
-      const submission = await directorStore.save(pdfFile, teacherName, importAcademicTerm, completenessMetadata);
+      const submission = await directorStore.save(pdfFile, teacherName, importAcademicTerm, completenessMetadata, teacherIdentity);
       await refresh();
       setSelectedId(submission.id);
       setImportOpen(false);

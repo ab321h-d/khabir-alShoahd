@@ -1,5 +1,6 @@
 import { assertWriteAllowed } from "./license/licenseGuard";
 import type { CompletenessMetadata } from "./completenessCheck";
+import type { SchoolStage, TeacherIdentityMetadata } from "./teacherIdentityImport";
 
 export type ReviewStatus = "new" | "reviewed" | "follow_up";
 export type ReviewLevel = "" | "متميز" | "متحقق" | "يحتاج متابعة";
@@ -21,6 +22,18 @@ export type DirectorSubmission = {
   whatsappMessage?: string;
   /** R-NEXT-2: تُملَأ فقط عند الاستيراد من حزمة .khabir.zip صالحة؛ اختيارية، لا تكسر السجلات القديمة. */
   completenessMetadata?: CompletenessMetadata | null;
+  /**
+   * PHASE ID-3D.2: هوية معلم ثابتة (identity.json مُتحقَّق منها ومُطابَقة مع
+   * completeness.json) — اختيارية بالكامل، تبقى غائبة لكل الحزم/PDF القديمة
+   * أو أي حزمة جديدة بلا identity.json صالح متطابق. teacherName يبقى
+   * للعرض فقط، بلا أي علاقة بهذه الحقول.
+   */
+  teacherId?: string;
+  schoolId?: string;
+  stage?: SchoolStage;
+  teacherDisplayName?: string;
+  exportId?: string;
+  identityGeneratedAt?: string;
 };
 
 type StoredSubmission = DirectorSubmission & { pdf: Blob };
@@ -108,13 +121,21 @@ export const directorStore = {
   },
 
   /** PHASE B.8: حراسة الكتابة (إنشاء). موقع الاستدعاء الوحيد في Director.tsx مغلَّف بـtry/catch. */
-  async save(file: File, teacherName: string, academicTerm: AcademicTerm = "", completenessMetadata: CompletenessMetadata | null = null): Promise<DirectorSubmission> {
+  async save(file: File, teacherName: string, academicTerm: AcademicTerm = "", completenessMetadata: CompletenessMetadata | null = null, teacherIdentity: TeacherIdentityMetadata | null = null): Promise<DirectorSubmission> {
     await assertWriteAllowed("director");
     const database = await openDatabase();
     const now = new Date().toISOString();
     const item: StoredSubmission = {
       id: crypto.randomUUID?.() || `sub-${Date.now()}-${Math.random().toString(16).slice(2)}`, fileName: file.name, teacherName: teacherName.trim() || file.name.replace(/\.pdf$/i, ""), importedAt: now, updatedAt: now,
       size: file.size, reviewStatus: "new", reviewLevel: "", academicTerm, comment: "", whatsappNumber: "", whatsappMessage: "", pdf: file, completenessMetadata,
+      ...(teacherIdentity ? {
+        teacherId: teacherIdentity.teacherId,
+        schoolId: teacherIdentity.schoolId,
+        stage: teacherIdentity.stage,
+        teacherDisplayName: teacherIdentity.displayName,
+        exportId: teacherIdentity.exportId,
+        identityGeneratedAt: teacherIdentity.generatedAt,
+      } : {}),
     };
     await closeWhenDone(database, requestValue(database.transaction(storeName, "readwrite").objectStore(storeName).put(item)));
     return publicRecord(item);
