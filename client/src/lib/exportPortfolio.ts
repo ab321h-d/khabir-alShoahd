@@ -8,6 +8,7 @@ import { zipSync } from "fflate";
 import { AlignmentType, BorderStyle, Document, ImageRun, Packer, PageBorderDisplay, PageBorderOffsetFrom, PageBorderZOrder, PageBreak, Paragraph, ShadingType, Table, TableCell, TableRow, TextRun, VerticalAlignTable, WidthType } from "docx";
 import { escapeHtml } from "./sanitize";
 import type { CompletenessMetadata } from "./completenessCheck";
+import type { SchoolStage } from "./identityStore";
 
 export type PortfolioImage = {
   blob: Blob;
@@ -207,19 +208,38 @@ export const exportPortfolioPdf = async (data: PortfolioExportData): Promise<Blo
 export const directorPackageDownloadName = () => "ملف-الأداء-للمراجعة.khabir.zip";
 
 /**
- * R-NEXT-2: يبني حزمة المدير (PDF + completeness.json) في عملية واحدة.
- * يستدعي exportPortfolioPdf() مرة واحدة فقط (بلا تعديل عليها، بلا تنزيل
- * وسيط) — الـPDF الناتج منها Blob في الذاكرة فقط حتى يُضغَط داخل الحزمة.
- * completenessMetadata تُحسَب مسبقًا من طرف المستدعي (Home.tsx) من بيانات
- * المعلم الحقيقية، ولا تُعاد حسابها هنا لتفادي أي ازدواجية منطق.
+ * PHASE ID-3D.1: بيانات هوية المعلم الثابتة المُرفَقة داخل الحزمة —
+ * schemaVersion غير موقَّعة تشفيريًا (unsigned metadata فقط)، لا تُشكِّل
+ * إثباتًا مقاومًا للتلاعب اليدوي بالـZIP خارج التطبيق. exportId/generatedAt
+ * يجب أن يطابقا نفس القيمتين في completeness.json تمامًا — لا تُوَلَّدان
+ * هنا من جديد.
  */
-export const buildDirectorPackage = async (data: PortfolioExportData, completenessMetadata: CompletenessMetadata): Promise<Blob> => {
+export type TeacherIdentityMetadata = {
+  schemaVersion: 1;
+  exportId: string;
+  teacherId: string;
+  schoolId: string;
+  stage: SchoolStage;
+  displayName: string;
+  generatedAt: string;
+};
+
+/**
+ * R-NEXT-2/ID-3D.1: يبني حزمة المدير (PDF + completeness.json + identity.json)
+ * في عملية واحدة. يستدعي exportPortfolioPdf() مرة واحدة فقط (بلا تعديل
+ * عليها، بلا تنزيل وسيط) — الـPDF الناتج منها Blob في الذاكرة فقط حتى
+ * يُضغَط داخل الحزمة. completenessMetadata وidentity يُحسَبان مسبقًا من
+ * طرف المستدعي (Home.tsx)، ولا يُعاد حسابهما هنا لتفادي أي ازدواجية منطق.
+ */
+export const buildDirectorPackage = async (data: PortfolioExportData, completenessMetadata: CompletenessMetadata, identity: TeacherIdentityMetadata): Promise<Blob> => {
   const pdfBlob = await exportPortfolioPdf(data);
   const pdfBytes = new Uint8Array(await pdfBlob.arrayBuffer());
   const metadataBytes = new TextEncoder().encode(JSON.stringify(completenessMetadata));
+  const identityBytes = new TextEncoder().encode(JSON.stringify(identity));
   const zipped = zipSync({
     "portfolio.pdf": pdfBytes,
     "completeness.json": metadataBytes,
+    "identity.json": identityBytes,
   });
   return new Blob([zipped], { type: "application/zip" });
 };

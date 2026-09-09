@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, createContext, useContext, type ReactNode } from "react";
 import {
   lockTeacherSession,
   resolveTeacherAccess,
@@ -7,7 +7,7 @@ import {
   type TeacherAccessState,
 } from "@/lib/teacherAuth";
 import { TEACHER_ACTIVATION_PUBLIC_KEY_JWK } from "@/lib/teacherActivationConfig";
-import type { SchoolStage } from "@/lib/identityStore";
+import { identityStore, type SchoolStage, type UserIdentity } from "@/lib/identityStore";
 
 /**
  * PHASE ID-3B: مطابقة مقصودة لبنية DirectorAuthGate.tsx (نفس النمط
@@ -154,14 +154,45 @@ function TeacherPinScreen({ access, onSuccess }: { access: Extract<TeacherAccess
 
 // ===== البوابة المركزية =====
 
+// ===== PHASE ID-3D.1: هوية المعلم المصادَق عليها كاملة، مُتاحة لـHome.tsx =====
+
+type TeacherIdentityContextValue = { identity: UserIdentity };
+const TeacherIdentityContext = createContext<TeacherIdentityContextValue | null>(null);
+
+/**
+ * يُستخدَم داخل أي مكوّن ضمن مساحة المعلم بعد المصادقة (مثل Home.tsx عند
+ * بناء identity.json) — يوفّر UserIdentity الكاملة (بما فيها displayName)،
+ * لا فقط TeacherSession. teacherId يجب أن يُؤخَذ دائمًا من identity.userId،
+ * لا من أي مصدر آخر.
+ */
+export const useTeacherIdentity = (): TeacherIdentityContextValue => {
+  const value = useContext(TeacherIdentityContext);
+  if (!value) throw new Error("useTeacherIdentity يجب أن يُستخدَم داخل TeacherAuthGate بعد المصادقة");
+  return value;
+};
+
+// ===== البوابة المركزية =====
+
 export function TeacherAuthGate({ children }: { children: ReactNode }) {
   const [access, setAccess] = useState<TeacherAccessState>({ status: "loading" });
+  const [identity, setIdentity] = useState<UserIdentity | null>(null);
   const mountedRef = useRef(true);
   useEffect(() => () => { mountedRef.current = false; }, []);
 
   const refresh = async () => {
     const next = await resolveTeacherAccess();
-    if (mountedRef.current) setAccess(next);
+    if (next.status === "authenticated") {
+      // هوية كاملة (بما فيها displayName) — TeacherSession وحدها لا تحملها.
+      // إعادة استخدام مباشرة لـ identityStore.getIdentityById الموجودة أصلًا
+      // (نفس ما تستخدمه teacherAuth.ts داخليًا) — صفر تعديل على identityStore.ts.
+      const fullIdentity = await identityStore.getIdentityById(next.session.userId);
+      if (!mountedRef.current) return;
+      if (!fullIdentity) { setAccess({ status: "activation-required" }); return; }
+      setIdentity(fullIdentity);
+      setAccess(next);
+      return;
+    }
+    if (mountedRef.current) { setAccess(next); setIdentity(null); }
   };
 
   useEffect(() => { void refresh(); }, []);
@@ -176,5 +207,11 @@ export function TeacherAuthGate({ children }: { children: ReactNode }) {
     return <TeacherPinScreen access={access} onSuccess={() => { void refresh(); }} />;
   }
 
-  return <>{children}</>;
+  // authenticated — لكن ننتظر اكتمال جلب الهوية الكاملة قبل عرض children،
+  // بلا أي وميض لمحتوى بلا هوية متاحة.
+  if (!identity) {
+    return <main dir="rtl" className="director-auth-loading">جارٍ التحقق…</main>;
+  }
+
+  return <TeacherIdentityContext.Provider value={{ identity }}>{children}</TeacherIdentityContext.Provider>;
 }

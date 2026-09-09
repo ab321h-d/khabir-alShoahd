@@ -58,6 +58,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { computeAreaStatus, type CompletenessMetadata } from "@/lib/completenessCheck";
 import { inviteFromLocation } from "@/lib/collaborationInvite";
 import { assertWriteAllowedSync } from "@/lib/license/licenseGuard";
+import { useTeacherIdentity } from "@/components/TeacherAuthGate";
 
 type Step = 0 | 1;
 type BeforeInstallPromptEvent = Event & {
@@ -186,6 +187,7 @@ function PhoneHeader({ title, current, onBack, onStep, saveState, online, liteMo
 }
 
 export default function Home() {
+  const { identity } = useTeacherIdentity();
   const [currentStep, setCurrentStep] = useState<Step>(() => {
     const requestedStep = Number(new URLSearchParams(window.location.search).get("step"));
     return (Number.isInteger(requestedStep) && requestedStep >= 0 && requestedStep <= 1 ? requestedStep : 0) as Step;
@@ -1085,7 +1087,16 @@ export default function Home() {
         incompleteCount: groupedPerformanceAreas.filter((area) => area.status === "incomplete").length,
       },
     };
-    return buildDirectorPackage(data, metadata);
+    const identityMetadata = {
+      schemaVersion: 1 as const,
+      exportId: metadata.exportId,
+      teacherId: identity.userId,
+      schoolId: identity.schoolId,
+      stage: identity.stage,
+      displayName: identity.displayName,
+      generatedAt: metadata.generatedAt,
+    };
+    return buildDirectorPackage(data, metadata, identityMetadata);
   };
 
   const openDirectPrint = async () => {

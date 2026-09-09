@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { TeacherAuthGate } from "./TeacherAuthGate";
+import { TeacherAuthGate, useTeacherIdentity } from "./TeacherAuthGate";
 
 /**
  * PHASE ID-3B: اختبارات رسم حقيقية لـTeacherAuthGate عبر
@@ -23,6 +23,11 @@ vi.mock("@/lib/teacherAuth", () => ({
   lockTeacherSession: (...args: unknown[]) => lockTeacherSessionMock(...args),
 }));
 
+const getIdentityByIdMock = vi.fn();
+vi.mock("@/lib/identityStore", () => ({
+  identityStore: { getIdentityById: (...args: unknown[]) => getIdentityByIdMock(...args) },
+}));
+
 let mockedPublicKey: object | null = { kty: "EC" };
 vi.mock("@/lib/teacherActivationConfig", () => ({
   get TEACHER_ACTIVATION_PUBLIC_KEY_JWK() { return mockedPublicKey; },
@@ -37,6 +42,7 @@ const sampleSession = { userId: "user-1", role: "teacher" as const, schoolId: "2
 beforeEach(() => {
   vi.clearAllMocks();
   mockedPublicKey = { kty: "EC" };
+  getIdentityByIdMock.mockResolvedValue(sampleIdentity);
 });
 
 afterEach(() => cleanup());
@@ -63,6 +69,22 @@ describe("TeacherAuthGate — الرسم والتفاعل", () => {
     resolveTeacherAccessMock.mockResolvedValue({ status: "authenticated", session: sampleSession });
     render(<TeacherAuthGate><HomeMarker /></TeacherAuthGate>);
     await waitFor(() => { screen.getByTestId("teacher-home-marker"); });
+    cleanup();
+  });
+
+  it("B) authenticated Home تستقبل UserIdentity الصحيحة (teacherId=userId، بما فيها displayName) عبر useTeacherIdentity", async () => {
+    resolveTeacherAccessMock.mockResolvedValue({ status: "authenticated", session: sampleSession });
+    getIdentityByIdMock.mockResolvedValue(sampleIdentity);
+
+    function IdentityConsumer() {
+      const { identity } = useTeacherIdentity();
+      return <div data-testid="identity-dump">{identity.userId}|{identity.schoolId}|{identity.stage}|{identity.displayName}</div>;
+    }
+
+    render(<TeacherAuthGate><IdentityConsumer /></TeacherAuthGate>);
+    await waitFor(() => { screen.getByTestId("identity-dump"); });
+    expect(screen.getByTestId("identity-dump").textContent).toBe("user-1|2002|middle|أ. نورة");
+    expect(getIdentityByIdMock).toHaveBeenCalledWith("user-1");
     cleanup();
   });
 
