@@ -11,4 +11,11 @@
  * هذا المستودع (Phase منفصلة مستقبلية، خارج نطاق ID-3A). طالما القيمة null،
  * أي محاولة تفعيل تفشل بوضوح (fail-closed).
  */
-export const TEACHER_ACTIVATION_PUBLIC_KEY_JWK: JsonWebKey | null = null;
+export const TEACHER_ACTIVATION_PUBLIC_KEY_JWK: JsonWebKey | null = {
+  "key_ops": ["verify"],
+  "ext": true,
+  "kty": "EC",
+  "x": "2u25zNplS6gWp2hGr03zFTMvIIjnxWmyf5-40R3ZISc",
+  "y": "BLLymhREkBifrG1Ykt6ZbqQLHUSp12Ws7HnukCTqfZc",
+  "crv": "P-256"
+};
