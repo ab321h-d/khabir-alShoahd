@@ -1,6 +1,6 @@
 import { computeTrialExpiryIso, resolveEffectiveNow } from "./trialDate";
 import { verifyLicenseCode } from "./licenseCrypto";
-import type { ActivatedLicenseState, ActivationResult, AppLicenseVariant, LicenseScope, LicenseState, LicenseStatus, TrialLicenseState } from "./licenseTypes";
+import type { ActivatedLicenseState, ActivationResult, AppLicenseVariant, LicenseScope, LicenseState, LicenseStatus, SignedEntitlementPayload, TrialLicenseState } from "./licenseTypes";
 
 /**
  * PHASE B.5: ملف معزول تمامًا — لا يُستورَد من أي مكان في التطبيق الحالي.
@@ -92,4 +92,35 @@ export const evaluateActivationCode = async (
     lastSeenAt: nowIso,
   };
   return { ok: true, state };
+};
+
+/**
+ * PHASE LIC-6A: يحسب حالة كتابة لـ entitlement موقَّع (تجربة أو مدفوع)
+ * مُتحقَّق منه تشفيريًا بالفعل من طرف المستدعي (verifySignedEntitlementCode)
+ * — دالة نقية بالكامل، بلا أي تحقق تشفيري أو I/O هنا، بنفس نمط
+ * computeLicenseStatus الحالية تمامًا. lastSeenAt يُمرَّر منفصلًا عن الحمولة
+ * نفسها (لا يُخزَّن داخل الغلاف الموقَّع) للحفاظ على نفس حماية تراجع
+ * الساعة (LIC-2B) دون أي تغيير على منطقها.
+ */
+export const computeSignedEntitlementStatus = (payload: SignedEntitlementPayload, lastSeenAt: string, nowIso: string, variant: AppLicenseVariant): LicenseStatus => {
+  const { effectiveNowIso, clockRollbackDetected } = resolveEffectiveNow(nowIso, lastSeenAt);
+
+  if (!scopeCoversVariant(payload.scope, variant)) {
+    return {
+      kind: "wrong_scope",
+      effectiveNow: effectiveNowIso,
+      expiresAt: payload.expiresAt,
+      writesAllowed: false,
+      clockRollbackDetected,
+    };
+  }
+
+  const active = new Date(effectiveNowIso).getTime() < new Date(payload.expiresAt).getTime();
+  return {
+    kind: payload.kind === "trial" ? (active ? "trial_active" : "trial_expired") : (active ? "paid_active" : "paid_expired"),
+    effectiveNow: effectiveNowIso,
+    expiresAt: payload.expiresAt,
+    writesAllowed: active,
+    clockRollbackDetected,
+  };
 };

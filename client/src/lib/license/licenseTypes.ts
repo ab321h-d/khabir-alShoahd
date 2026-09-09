@@ -38,6 +38,35 @@ export type ActivatedLicenseState = {
 
 export type LicenseState = TrialLicenseState | ActivatedLicenseState;
 
+/**
+ * PHASE LIC-6A: نموذج entitlement موقَّع موحَّد (تجربة أو مدفوع)، مستقل
+ * تمامًا عن LicensePayload v:1 القديم — إصدار v:2 صريح لمنع أي التباس بين
+ * المُدقِّقين. accountId/kind/scope/expiresAt جميعها مشمولة بالتوقيع.
+ */
+export type EntitlementKind = "trial" | "paid";
+
+export type SignedEntitlementPayload = {
+  v: 2;
+  entitlementId: string;
+  accountId: string;
+  kind: EntitlementKind;
+  scope: LicenseScope;
+  issuedAt: string;
+  expiresAt: string;
+};
+
+/**
+ * الحالة المُخزَّنة مستقبلًا (LIC-6B، غير مُنفَّذة هنا) — تُخزِّن الغلاف
+ * الموقَّع الخام نفسه، لا أي حقل payload مُستخرَج مسبقًا. أي حقل payload
+ * "موثوق" يُشتَق فقط بعد إعادة تحقق تشفيري ناجح في كل قراءة — تعديل مباشر
+ * لـ`signedCode` في IndexedDB يُبطِل التوقيع فورًا عند إعادة التحقق.
+ */
+export type SignedEntitlementState = {
+  kind: "entitlement";
+  signedCode: string;
+  lastSeenAt: string;
+};
+
 export type LicenseStatusKind =
   | "trial_active"
   | "trial_expired"
