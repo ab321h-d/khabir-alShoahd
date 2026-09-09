@@ -42,12 +42,19 @@ export type DirectorBackupSubmission = DirectorSubmission & { payload: string };
 const databaseName = "khabir-director-local";
 const storeName = "submissions";
 const teacherContactsStoreName = "teacherContacts";
-const databaseVersion = 2;
+const teacherContactsByIdentityStoreName = "teacherContactsByIdentity";
+const databaseVersion = 3;
 
 /** R-NEXT-3: تطبيع مركزي لاسم المعلم — trim + دمج مسافات متكررة فقط، بلا مطابقة تقريبية (fuzzy). */
 export const normalizeTeacherName = (name: string): string => name.trim().replace(/\s+/g, " ");
 
 type TeacherContact = { normalizedName: string; whatsappNumber: string; updatedAt: string };
+/**
+ * PHASE ID-3E: جهة اتصال مرتبطة بهوية معلم ثابتة (teacherId)، منفصلة تمامًا
+ * عن TeacherContact القديم المبني على الاسم — تحل تصادم معلمَين بنفس الاسم.
+ * لا علاقة بينها وبين teacherContacts إطلاقًا، لا مشاركة مفتاح ولا بيانات.
+ */
+type TeacherContactByIdentity = { teacherId: string; whatsappNumber: string; updatedAt: string };
 
 const openDatabase = () => new Promise<IDBDatabase>((resolve, reject) => {
   const request = indexedDB.open(databaseName, databaseVersion);
@@ -55,6 +62,8 @@ const openDatabase = () => new Promise<IDBDatabase>((resolve, reject) => {
     const database = request.result;
     if (!database.objectStoreNames.contains(storeName)) database.createObjectStore(storeName, { keyPath: "id" });
     if (!database.objectStoreNames.contains(teacherContactsStoreName)) database.createObjectStore(teacherContactsStoreName, { keyPath: "normalizedName" });
+    // PHASE ID-3E: مخزن إضافي فقط — لا حذف ولا إعادة إنشاء لأي مخزن موجود.
+    if (!database.objectStoreNames.contains(teacherContactsByIdentityStoreName)) database.createObjectStore(teacherContactsByIdentityStoreName, { keyPath: "teacherId" });
   };
   request.onsuccess = () => resolve(request.result);
   request.onerror = () => reject(request.error);
@@ -118,6 +127,28 @@ export const directorStore = {
     const database = await openDatabase();
     const contact: TeacherContact = { normalizedName, whatsappNumber, updatedAt: new Date().toISOString() };
     await closeWhenDone(database, requestValue(database.transaction(teacherContactsStoreName, "readwrite").objectStore(teacherContactsStoreName).put(contact)));
+  },
+
+  /**
+   * PHASE ID-3E: قراءة جهة اتصال مرتبطة بـteacherId ثابت — مستقلة تمامًا عن
+   * getTeacherContact (الاسم). قراءة فقط، بلا حراسة، بلا fallback للاسم عند
+   * عدم وجود سجل (قرار fail-safe مقصود: يمنع إعادة إنتاج مشكلة تصادم الاسم
+   * التي صُمِّم هذا المخزن أصلًا لحلها).
+   */
+  async getTeacherContactByIdentity(teacherId: string): Promise<string | null> {
+    if (!teacherId) return null;
+    const database = await openDatabase();
+    const contact = await closeWhenDone(database, requestValue(database.transaction(teacherContactsByIdentityStoreName, "readonly").objectStore(teacherContactsByIdentityStoreName).get(teacherId)).catch(() => undefined)) as TeacherContactByIdentity | undefined;
+    return contact?.whatsappNumber || null;
+  },
+
+  /** PHASE ID-3E: حراسة الكتابة — نفس نمط upsertTeacherContact، مخزن منفصل بالكامل. */
+  async upsertTeacherContactByIdentity(teacherId: string, whatsappNumber: string): Promise<void> {
+    if (!teacherId || !whatsappNumber.trim()) return;
+    await assertWriteAllowed("director");
+    const database = await openDatabase();
+    const contact: TeacherContactByIdentity = { teacherId, whatsappNumber, updatedAt: new Date().toISOString() };
+    await closeWhenDone(database, requestValue(database.transaction(teacherContactsByIdentityStoreName, "readwrite").objectStore(teacherContactsByIdentityStoreName).put(contact)));
   },
 
   /** PHASE B.8: حراسة الكتابة (إنشاء). موقع الاستدعاء الوحيد في Director.tsx مغلَّف بـtry/catch. */
