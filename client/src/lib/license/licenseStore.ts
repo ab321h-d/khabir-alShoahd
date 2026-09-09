@@ -82,10 +82,19 @@ export const licenseStore = {
     return trial;
   },
 
-  /** يحدّث فقط `lastSeenAt` (لرصد تراجع الساعة) دون تغيير أي حقل آخر. */
+  /**
+   * يحدّث فقط `lastSeenAt` (لرصد تراجع الساعة) دون تغيير أي حقل آخر.
+   * PHASE LIC-2B: `lastSeenAt` لا يجوز أن يتحرك للخلف أبدًا — يُقارَن الوقت
+   * الجديد بالوقت المخزَّن فعليًا كطابعَي زمن رقميَّين (لا مقارنة نصية غير
+   * موثوقة)، وتُكتَب القيمة فقط إن كانت أحدث فعليًا. تساوٍ أو تراجع = تُبقى
+   * القيمة المخزَّنة كما هي، بلا كتابة إطلاقًا.
+   */
   async touchLastSeen(nowIso: string = new Date().toISOString()): Promise<void> {
     const existing = await readLicenseState();
     if (!existing) return;
+    const nowTime = new Date(nowIso).getTime();
+    const existingTime = new Date(existing.lastSeenAt).getTime();
+    if (Number.isNaN(nowTime) || nowTime <= existingTime) return;
     await writeLicenseState({ ...existing, lastSeenAt: nowIso });
   },
 
