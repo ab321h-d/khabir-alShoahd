@@ -1,6 +1,6 @@
 import { LICENSE_PUBLIC_KEY_JWK } from "./licenseConfig";
 import { createInitialTrialState, evaluateActivationCode } from "./licenseLogic";
-import type { ActivationResult, AppLicenseVariant, LicenseState } from "./licenseTypes";
+import type { ActivationResult, AppLicenseVariant, LicenseState, PersistedLicenseState } from "./licenseTypes";
 
 /**
  * PHASE B.5: ملف معزول تمامًا — لا يُستورَد من أي مكان في التطبيق الحالي.
@@ -27,13 +27,13 @@ const openLicenseDatabase = () => new Promise<IDBDatabase>((resolve, reject) => 
   request.onerror = () => reject(request.error);
 });
 
-const readLicenseState = async (): Promise<LicenseState | null> => {
+const readLicenseState = async (): Promise<PersistedLicenseState | null> => {
   if (typeof window === "undefined" || !window.indexedDB) return null;
   const database = await openLicenseDatabase();
   try {
     return await new Promise((resolve, reject) => {
       const request = database.transaction(LICENSE_STORE_NAME, "readonly").objectStore(LICENSE_STORE_NAME).get(LICENSE_RECORD_KEY);
-      request.onsuccess = () => resolve((request.result as LicenseState | undefined) || null);
+      request.onsuccess = () => resolve((request.result as PersistedLicenseState | undefined) || null);
       request.onerror = () => reject(request.error);
     });
   } finally {
@@ -41,7 +41,7 @@ const readLicenseState = async (): Promise<LicenseState | null> => {
   }
 };
 
-const writeLicenseState = async (state: LicenseState): Promise<void> => {
+const writeLicenseState = async (state: PersistedLicenseState): Promise<void> => {
   if (typeof window === "undefined" || !window.indexedDB) return;
   const database = await openLicenseDatabase();
   try {
@@ -71,12 +71,30 @@ const deleteLicenseState = async (): Promise<void> => {
 
 export const licenseStore = {
   /**
+   * PHASE LIC-6B: قراءة خام غير مُهيِّئة — لا تُنشئ تجربة جديدة، لا تُعدِّل
+   * أي شيء، لا تتحقق تشفيريًا. مجرد وجود سجل entitlement (صالح أو تالف) هنا
+   * يمنع الوصول إلى getOrInitializeState تمامًا من طرف المستدعي (licenseGuard).
+   */
+  async readCurrentState(): Promise<PersistedLicenseState | null> {
+    return readLicenseState();
+  },
+
+  /**
    * يعيد حالة الترخيص الحالية، وينشئ حالة تجربة جديدة تلقائيًا إن لم توجد أي
    * حالة سابقة إطلاقًا.
    */
   async getOrInitializeState(nowIso: string = new Date().toISOString()): Promise<LicenseState> {
     const existing = await readLicenseState();
-    if (existing) return existing;
+    if (existing) {
+      // PHASE LIC-6B-FIX: تضييق صريح، لا cast غير آمن يتظاهر بأن entitlement
+      // هو LicenseState قديم. لا يجوز أن يحدث هذا فعليًا (licenseGuard.ts لا
+      // تستدعي هذه الدالة إطلاقًا عند وجود entitlement)، لكن الدالة نفسها
+      // يجب أن تبقى صحيحة النوع بمعزل عن سلوك المستدعي — خطأ صريح بدل كذب نوعي.
+      if (existing.kind === "entitlement") {
+        throw new Error("getOrInitializeState: لا يجوز استدعاؤها مع وجود entitlement مُخزَّن — استخدم readCurrentState بدلًا منها.");
+      }
+      return existing;
+    }
     const trial = createInitialTrialState(nowIso);
     await writeLicenseState(trial);
     return trial;

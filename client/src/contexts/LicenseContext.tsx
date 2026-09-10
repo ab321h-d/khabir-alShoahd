@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { getCurrentLicenseStatus } from "@/lib/license/licenseGuard";
 import { licenseStore } from "@/lib/license/licenseStore";
 import type { ActivationResult, AppLicenseVariant, LicenseStatus } from "@/lib/license/licenseTypes";
@@ -24,14 +24,19 @@ const LicenseContext = createContext<LicenseContextValue | undefined>(undefined)
 export function LicenseProvider({ children, variant }: { children: React.ReactNode; variant: AppLicenseVariant }) {
   const [status, setStatus] = useState<LicenseStatus | null>(null);
   const [loading, setLoading] = useState(true);
+  // PHASE LIC-6B: عدَّاد طلب محلي مستقل تمامًا عن عدَّاد licenseGuard.ts —
+  // يحمي setStatus/setLoading فقط من طلب refresh أقدم يكتمل متأخرًا بعد
+  // طلب أحدث (سباق حقيقي ممكن: تحميل أولي + activate() المتزامنَين).
+  const latestRequestRef = useRef(0);
 
   const refresh = useCallback(async () => {
+    const requestId = ++latestRequestRef.current;
     setLoading(true);
     try {
       const next = await getCurrentLicenseStatus(variant);
-      setStatus(next);
+      if (requestId === latestRequestRef.current) setStatus(next);
     } finally {
-      setLoading(false);
+      if (requestId === latestRequestRef.current) setLoading(false);
     }
   }, [variant]);
 

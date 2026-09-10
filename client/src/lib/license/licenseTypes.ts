@@ -39,6 +39,13 @@ export type ActivatedLicenseState = {
 export type LicenseState = TrialLicenseState | ActivatedLicenseState;
 
 /**
+ * PHASE LIC-6B: نوع قراءة/تخزين خام فقط — يُستخدَم حصرًا في توقيع
+ * licenseStore.readCurrentState(). لا يُستخدَم في computeLicenseStatus ولا
+ * في أي منطق إنتاجي آخر. LicenseState الإنتاجي يبقى ثنائيًا كما هو تمامًا.
+ */
+export type PersistedLicenseState = LicenseState | SignedEntitlementState;
+
+/**
  * PHASE LIC-6A: نموذج entitlement موقَّع موحَّد (تجربة أو مدفوع)، مستقل
  * تمامًا عن LicensePayload v:1 القديم — إصدار v:2 صريح لمنع أي التباس بين
  * المُدقِّقين. accountId/kind/scope/expiresAt جميعها مشمولة بالتوقيع.
@@ -72,7 +79,8 @@ export type LicenseStatusKind =
   | "trial_expired"
   | "paid_active"
   | "paid_expired"
-  | "wrong_scope";
+  | "wrong_scope"
+  | "invalid";
 
 export type LicenseStatus = {
   kind: LicenseStatusKind;
