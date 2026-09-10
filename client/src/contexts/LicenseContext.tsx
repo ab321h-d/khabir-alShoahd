@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { getCurrentLicenseStatus } from "@/lib/license/licenseGuard";
 import { licenseStore } from "@/lib/license/licenseStore";
+import { initLicenseCrossTabSync } from "@/lib/license/licenseCrossTabSync";
 import type { ActivationResult, AppLicenseVariant, LicenseStatus } from "@/lib/license/licenseTypes";
 
 /**
@@ -43,6 +44,14 @@ export function LicenseProvider({ children, variant }: { children: React.ReactNo
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // PHASE LIC-6C.1-FIX5: تهيئة مزامنة الكاش عبر التبويبات مرة واحدة لكل
+  // دورة حياة المكوّن المناسبة — تنظيف كامل عند الإزالة، يمنع تكرار
+  // المستمعين عبر mount/unmount متكرر (React StrictMode).
+  useEffect(() => {
+    const sync = initLicenseCrossTabSync(variant);
+    return () => sync.dispose();
+  }, [variant]);
 
   const activate = useCallback(async (code: string) => {
     const result = await licenseStore.activate(code, variant);

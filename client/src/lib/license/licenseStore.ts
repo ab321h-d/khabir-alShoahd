@@ -139,4 +139,16 @@ export const licenseStore = {
     await writeLicenseState(trial);
     return trial;
   },
+
+  /**
+   * PHASE LIC-6C.1: تخزين منخفض المستوى لـsignedCode مُتحقَّق منه تشفيريًا
+   * بالفعل من طرف المستدعي (licenseEnrollment.ts) — هذه الدالة نفسها لا
+   * تتحقق من شيء ولا تُقرِّر أي منطق ترقية/تنزيل، فقط كتابة ذرية واحدة
+   * (put واحد، نفس نمط activate()) لسجل entitlement كامل جديد. القرار
+   * الأمني (هل يُسمَح بهذا الاستبدال أصلًا) مسؤولية الطبقة الأعلى حصرًا.
+   */
+  async saveVerifiedSignedEntitlement(signedCode: string, lastSeenAt: string): Promise<void> {
+    const state: PersistedLicenseState = { kind: "entitlement", signedCode, lastSeenAt };
+    await writeLicenseState(state);
+  },
 };
