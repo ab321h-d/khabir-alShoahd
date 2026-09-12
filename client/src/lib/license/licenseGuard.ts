@@ -22,6 +22,20 @@ export class LicenseRestrictedError extends Error {
   }
 }
 
+/**
+ * PHASE LIC-6D-B-3B.3-B1: حالة "لا سلطة محلية كافية" — تُستخدَم حصرًا عند
+ * غياب أي حالة ترخيص محلية إطلاقًا (state === null). صفر تجربة جديدة تلقائية
+ * — الخادم هو السلطة الوحيدة لبدء/استعادة Trial من الآن فصاعدًا. لا تعني
+ * منتهٍ/مُبطَل/تالف — فقط "غياب"، بانتظار recovery flow مستقبلي.
+ */
+const buildMissingStatus = (nowIso: string): LicenseStatus => ({
+  kind: "missing",
+  effectiveNow: nowIso,
+  expiresAt: nowIso,
+  writesAllowed: false,
+  clockRollbackDetected: false,
+});
+
 /** حالة مرفوضة آمنة، بلا أي قيمة مضلِّلة — تُستخدَم لبيانات اعتماد entitlement فشل تحققها التشفيري، وأيضًا لطلبات قديمة تجاوزها طلب أحدث (لا يجوز أبدًا أن تُفوِّض كتابة). */
 const buildDeniedStatus = (nowIso: string): LicenseStatus => ({
   kind: "invalid",
@@ -69,11 +83,18 @@ export const getCurrentLicenseStatus = async (variant: AppLicenseVariant): Promi
       // فشل تحقق تشفيري: صفر touch، صفر حذف، صفر تجربة جديدة.
       status = buildDeniedStatus(now);
     }
-  } else {
-    // state === null، أو Legacy (trial/activated) — المسار الحالي بلا أي تغيير دلالي.
-    const legacyState = state && (state.kind === "trial" || state.kind === "activated") ? state : await licenseStore.getOrInitializeState(now);
-    status = computeLicenseStatus(legacyState, now, variant);
+  } else if (state && (state.kind === "trial" || state.kind === "activated")) {
+    // Legacy (trial/activated) موجود فعليًا — المسار الحالي بلا أي تغيير
+    // دلالي، مؤكَّد أنه يجب أن يستمر بالعمل (لا كسر توافق legacy في B1).
+    status = computeLicenseStatus(state, now, variant);
     await licenseStore.touchLastSeen(now);
+  } else {
+    // PHASE LIC-6D-B-3B.3-B1: state === null بالضبط — صفر استدعاء لـ
+    // getOrInitializeState هنا نهائيًا، صفر تجربة محلية جديدة تُنشَأ أبدًا.
+    // هذا هو المسار الوحيد الذي كان يُنشئ trial جديدة تلقائيًا سابقًا —
+    // مُغلَق الآن، الخادم هو السلطة الوحيدة لبدء/استعادة Trial.
+    status = buildMissingStatus(now);
+    // صفر touchLastSeen هنا عمدًا — لا يوجد سجل محلي أصلًا لتحديث وقته.
   }
 
   // PHASE LIC-6B-FIX2: عدَّاد latestRequestId يحكم ملكية الكاش فقط — لا

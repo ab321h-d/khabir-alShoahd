@@ -130,14 +130,15 @@ export const licenseStore = {
   },
 
   /**
-   * إعادة ضبط الترخيص: فعل صريح ومستقل، غير مرتبط بأي مسار "مسح بيانات
-   * التطبيق" عادي. يعيد الحالة إلى تجربة جديدة تبدأ الآن.
+   * PHASE LIC-6D-B-3B.3-B1: إعادة ضبط الترخيص — لم تعد تُنشئ تجربة جديدة
+   * إطلاقًا (الخادم هو السلطة الوحيدة لبدء Trial الآن). تحذف الحالة المحلية
+   * فقط، تاركة النظام في حالة "missing" (صفر سلطة، صفر كتابة) حتى استرداد
+   * فعلي مستقبلي. صفر نقطة استدعاء إنتاجية حالية لهذه الدالة (مؤكَّد من فحص
+   * المشروع بأكمله) — تستخدمها الاختبارات فقط حاليًا.
    */
-  async resetLicenseExplicitly(nowIso: string = new Date().toISOString()): Promise<LicenseState> {
+  async resetLicenseExplicitly(): Promise<null> {
     await deleteLicenseState();
-    const trial = createInitialTrialState(nowIso);
-    await writeLicenseState(trial);
-    return trial;
+    return null;
   },
 
   /**

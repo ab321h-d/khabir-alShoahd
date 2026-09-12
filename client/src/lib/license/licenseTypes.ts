@@ -74,13 +74,20 @@ export type SignedEntitlementState = {
   lastSeenAt: string;
 };
 
+/**
+ * PHASE LIC-6D-B-3B.3-B1: "missing" تعني حصرًا "لا توجد سلطة ترخيص محلية
+ * كافية للسماح بالكتابة، ويجب الرجوع لاحقًا إلى server/recovery flow" —
+ * لا تعني منتهٍ، ولا مُبطَل، ولا تالف، ولا "تجربة متاحة". حالة نهائية محليًا
+ * حتى استرداد فعلي من الخادم (غير مُنفَّذ في هذه المرحلة).
+ */
 export type LicenseStatusKind =
   | "trial_active"
   | "trial_expired"
   | "paid_active"
   | "paid_expired"
   | "wrong_scope"
-  | "invalid";
+  | "invalid"
+  | "missing";
 
 export type LicenseStatus = {
   kind: LicenseStatusKind;

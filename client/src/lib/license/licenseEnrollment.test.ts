@@ -87,19 +87,19 @@ describe("licenseEnrollment — LIC-6C.1", () => {
     expect((await readRaw()).signedCode).toBe(oldCode);
   });
 
-  it("4) malformed code rejected — cache restored via central path (which creates a legacy trial when no prior state exists, matching pre-existing documented getOrInitializeState behavior — not a new side effect of this fix)", async () => {
+  it("4) malformed code rejected — no prior state -> cache restoration via central path now yields missing (no fresh trial written), matching LIC-6D-B-3B.3-B1 contract", async () => {
     const result = await enrollSignedEntitlement("not-even-two-parts", "teacher");
     expect(result.status).toBe("invalid");
     const after = await licenseStore.readCurrentState();
-    expect(after?.kind).toBe("trial"); // getOrInitializeState الموجودة أصلًا تُنشئ تجربة عند غياب الحالة — سلوك موثَّق سابقًا، لا خطأ جديد
+    expect(after).toBeNull(); // PHASE B1: صفر trial تُكتَب في القاعدة عند غياب حالة سابقة
   });
 
-  it("5) expired trial rejected — no prior state means restore creates a fresh legacy trial (existing documented behavior)", async () => {
+  it("5) expired trial rejected — no prior state -> restoration yields missing (no fresh trial), matching LIC-6D-B-3B.3-B1 contract", async () => {
     const code = await buildCode({ ...trial, expiresAt: past }, testKeyPair.privateKey);
     const result = await enrollSignedEntitlement(code, "teacher");
     expect(result.status).toBe("expired");
     const after = await licenseStore.readCurrentState();
-    expect(after?.kind).toBe("trial");
+    expect(after).toBeNull();
   });
 
   it("6) expired paid rejected", async () => {
