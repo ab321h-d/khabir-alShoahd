@@ -1,6 +1,6 @@
 import { LICENSE_PUBLIC_KEY_JWK } from "./licenseConfig";
 import { verifySignedEntitlementCode } from "./licenseCrypto";
-import { computeSignedEntitlementStatus } from "./licenseLogic";
+import { computeLicenseStatus, computeSignedEntitlementStatus } from "./licenseLogic";
 import { licenseStore } from "./licenseStore";
 import { getCurrentLicenseStatus } from "./licenseGuard";
 import { createGeneration, lockNameForVariant, notifyLicenseChanged, notifyLicenseChanging } from "./licenseCrossTabSync";
@@ -180,6 +180,155 @@ export const enrollSignedEntitlement = (signedCode: string, variant: AppLicenseV
     releaseWriteDenyHold(variant, `local:${generation}`);
     // §3: إشارة إكمال أفضل جهد دائمًا — بما فيها كل حالات الرفض وأي throw
     // غير متوقَّع؛ finally تضمن هذا بنيويًا.
+    notifyLicenseChanged(variant, generation);
+  });
+};
+
+/**
+ * PHASE LIC-6D-B-3B.3-B2-REAL: مصفوفة استبدال مخصَّصة للاسترداد — منفصلة
+ * عمدًا عن isReplacementAllowed (التي صُمِّمت لتفعيل يدوي اختياري، لا
+ * استرداد سلطوي من الخادم). الفرق الجوهري: existing غير نشط لهذا الـvariant
+ * تحديدًا (منتهٍ، أو نطاق خاطئ، أو تالف، أو غائب) → الاسترداد الكنسي يُسمَح
+ * دائمًا بصرف النظر عن kind أو نشاط الجديد. existing لا يزال نشطًا لهذا
+ * الـvariant تحديدًا → لا يُدمَّر أبدًا بمسترَد غير نشط (مبدأ أمان أدنى
+ * صريح)، وإن كان كلاهما نشطًا تُطبَّق نفس مصفوفة D/E/F/G (لـsigned) أو
+ * المقارنة المكافئة لـlegacy (trial/activated)، بلا تكرار منطق.
+ */
+const isRecoveryReplacementAllowed = async (newPayload: SignedEntitlementPayload, newActive: boolean, variant: AppLicenseVariant): Promise<boolean> => {
+  const existingState = await licenseStore.readCurrentState(variant);
+
+  if (!existingState) return true; // missing → أي استرداد صالح، نشطًا كان أم منتهيًا
+
+  if (existingState.kind === "entitlement") {
+    const existingVerification = LICENSE_PUBLIC_KEY_JWK ? await verifySignedEntitlementCode(existingState.signedCode, LICENSE_PUBLIC_KEY_JWK) : { ok: false as const, error: "malformed" as const };
+    if (!existingVerification.ok) return true; // existing تالف → الكنسي المسترَد يحل محله دائمًا
+
+    const existingPayload = existingVerification.payload;
+    const now = new Date().toISOString();
+    // الحساب المركزي الموثوق نفسه — يشمل فحص scope ضمنيًا (نطاق خاطئ لهذا
+    // الـvariant ⇒ writesAllowed=false، تمامًا كأنه غير نشط أصلًا هنا)
+    const existingStatusForVariant = computeSignedEntitlementStatus(existingPayload, existingState.lastSeenAt, now, variant);
+    const existingActiveForVariant = existingStatusForVariant.writesAllowed;
+
+    if (!existingActiveForVariant) return true; // ليس حقًا نشطًا لهذا الـvariant تحديدًا → الكنسي المسترَد يحل محله دائمًا
+
+    if (!newActive) return false; // مبدأ أمان أدنى صريح: حق نشط لا يُدمَّر أبدًا بمسترَد غير نشط
+
+    // كلاهما نشط لنفس الـvariant — نفس مصفوفة D/E/F/G الأصلية حرفيًا
+    if (existingPayload.kind === "trial" && newPayload.kind === "paid") return true;
+    if (existingPayload.kind === "trial" && newPayload.kind === "trial") {
+      return new Date(newPayload.expiresAt).getTime() >= new Date(existingPayload.expiresAt).getTime();
+    }
+    if (existingPayload.kind === "paid" && newPayload.kind === "paid") {
+      return new Date(newPayload.expiresAt).getTime() >= new Date(existingPayload.expiresAt).getTime();
+    }
+    if (existingPayload.kind === "paid" && newPayload.kind === "trial") return false;
+    return false;
+  }
+
+  if (existingState.kind === "trial" || existingState.kind === "activated") {
+    // مقارنة حقيقية بمصفوفة D/E/F/G نفسها للحالة القديمة (legacy) — ليست
+    // فقط "هل recovered منتهٍ؟" (كانت ستسمح بتنزيل paid→trial أو تقصير مدة
+    // trial نشطة بصمت). legacyStatus.expiresAt مصدر الحقيقة الموحَّد لتاريخ
+    // انتهاء legacy الفعلي (سواء trial محسوبة أو activated مباشرة).
+    const legacyStatus = computeLicenseStatus(existingState, new Date().toISOString(), variant);
+    const existingActiveForVariant = legacyStatus.kind === "trial_active" || legacyStatus.kind === "paid_active";
+
+    if (!existingActiveForVariant) return true; // نطاق خاطئ لهذا الـvariant أو منتهٍ أصلًا → الاسترداد يحل محله دائمًا
+
+    if (!newActive) return false; // مبدأ الأمان الأدنى: لا يُدمَّر بمسترَد منتهٍ أبدًا
+
+    const existingIsLegacyPaid = existingState.kind === "activated"; // legacy v1 مُفعَّل = مكافئ paid
+    const existingIsLegacyTrial = existingState.kind === "trial";
+
+    if (existingIsLegacyTrial && newPayload.kind === "paid") return true;
+    if (existingIsLegacyTrial && newPayload.kind === "trial") {
+      return new Date(newPayload.expiresAt).getTime() >= new Date(legacyStatus.expiresAt).getTime();
+    }
+    if (existingIsLegacyPaid && newPayload.kind === "paid") {
+      return new Date(newPayload.expiresAt).getTime() >= new Date(legacyStatus.expiresAt).getTime();
+    }
+    if (existingIsLegacyPaid && newPayload.kind === "trial") return false;
+    return false;
+  }
+
+  return false;
+};
+
+/**
+ * PHASE LIC-6D-B-3B.3-B2-REAL: مسار حفظ منفصل تمامًا لـsignedCode مُسترَد
+ * من مصدر backend موثوق مستقبلًا (B4 — لا تنفيذ شبكة هنا إطلاقًا) — يختلف
+ * عن enrollWithinLock في نقطة واحدة جوهرية: يسمح بحفظ entitlement منتهية
+ * الصلاحية صحيحة تشفيريًا وبنطاق مطابق (Recovery يُميِّز "غائب" عن "معروف
+ * لكن منتهٍ" — enrollWithinLock يبقى يرفض expired كما هو تمامًا، صفر تغيير
+ * على enrollWithinLock/isReplacementAllowed الأصليتين).
+ */
+export type RecoveryPersistStatus =
+  | "success_active"
+  | "success_expired"
+  | "invalid"
+  | "wrong_scope"
+  | "replacement_denied"
+  | "persistence_error";
+
+export type RecoveryPersistResult = { status: RecoveryPersistStatus };
+
+const persistRecoveredWithinLock = async (signedCode: string, variant: AppLicenseVariant): Promise<RecoveryPersistResult> => {
+  const normalizedSignedCode = signedCode.trim();
+
+  const fail = async (status: RecoveryPersistStatus): Promise<RecoveryPersistResult> => {
+    await getCurrentLicenseStatus(variant);
+    return { status };
+  };
+
+  if (!normalizedSignedCode) return fail("invalid");
+  if (!LICENSE_PUBLIC_KEY_JWK) return fail("invalid");
+
+  const verification = await verifySignedEntitlementCode(normalizedSignedCode, LICENSE_PUBLIC_KEY_JWK);
+  if (!verification.ok) return fail("invalid");
+
+  const now = new Date().toISOString();
+  const freshStatus = computeSignedEntitlementStatus(verification.payload, now, now, variant);
+
+  if (freshStatus.kind === "wrong_scope") return fail("wrong_scope");
+
+  const isActive = freshStatus.writesAllowed;
+
+  const allowed = await isRecoveryReplacementAllowed(verification.payload, isActive, variant);
+  if (!allowed) return fail("replacement_denied");
+
+  const existingRawState = await licenseStore.readCurrentState(variant);
+  const priorLastSeenTime = existingRawState && "lastSeenAt" in existingRawState ? new Date(existingRawState.lastSeenAt).getTime() : -Infinity;
+  const nowTime = new Date(now).getTime();
+  const lastSeenAt = nowTime > priorLastSeenTime ? now : (existingRawState as { lastSeenAt: string }).lastSeenAt;
+
+  try {
+    await licenseStore.saveVerifiedSignedEntitlement(normalizedSignedCode, lastSeenAt, variant);
+  } catch {
+    return fail("persistence_error");
+  }
+
+  const finalStatus = await getCurrentLicenseStatus(variant);
+  return { status: finalStatus.writesAllowed ? "success_active" : "success_expired" };
+};
+
+/**
+ * نقطة الدخول الوحيدة لحفظ entitlement مُسترَد من backend موثوق مستقبلًا
+ * (B4 — لا استدعاء شبكة هنا إطلاقًا). تستقبل signedCode الخام فقط +
+ * AppLicenseVariant من سياق التطبيق الموثوق — نفس بنية القفل/الاحتجاز/
+ * المزامنة الحالية بالضبط (مُدرِكة لـvariant منذ B3-REAL) — صفر نظام
+ * حراسة كتابة ثانٍ، صفر بروتوكول مزامنة جديد.
+ */
+export const persistRecoveredSignedEntitlement = (signedCode: string, variant: AppLicenseVariant): Promise<RecoveryPersistResult> => {
+  setCachedWriteStatus(variant, false);
+  const generation = createGeneration();
+  acquireWriteDenyHold(variant, `local:${generation}`);
+
+  const persistPromise = runExclusiveResource(variant, () => persistRecoveredWithinLock(signedCode, variant));
+  notifyLicenseChanging(variant, generation);
+
+  return persistPromise.finally(() => {
+    releaseWriteDenyHold(variant, `local:${generation}`);
     notifyLicenseChanged(variant, generation);
   });
 };
