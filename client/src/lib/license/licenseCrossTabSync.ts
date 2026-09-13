@@ -12,12 +12,16 @@ import { acquireWriteDenyHold, releaseWriteDenyHold } from "./writeGuardCache";
  * رسائل القناة آمنة تمامًا: نوع الرسالة + معرّف جيل معتم فقط — صفر
  * signedCode/payload/accountId/entitlementId/scope/expiresAt/أي بيانات
  * حساسة إطلاقًا.
+ *
+ * PHASE LIC-6D-B-3B.3-B3-REAL: القناة والقفل أصبحا مُدرِكَين لـvariant —
+ * عملية استرداد/تسجيل للمعلم لا تُعطِّل كتابة المدير بعد الآن (والعكس)،
+ * طالما سجليهما مستقلان فعليًا (current:teacher / current:director).
  */
 
-const CHANNEL_NAME = "khabir-license-state";
+const channelNameForVariant = (variant: AppLicenseVariant): string => `khabir-license-state:${variant}`;
 
-/** نفس اسم قفل FIX4 بالضبط — مصدر الحقيقة الوحيد له الآن. */
-export const LICENSE_RESOURCE_LOCK_NAME = "khabir-license-enrollment-current";
+/** نفس منطق اسم قفل FIX4 السابق، الآن مُدرِك لـvariant. */
+export const lockNameForVariant = (variant: AppLicenseVariant): string => `khabir-license-enrollment-current:${variant}`;
 
 const SESSION_ID = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `sess-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
@@ -36,11 +40,11 @@ const getBroadcastChannelCtor = (): typeof BroadcastChannel | undefined =>
  * منها إطلاقًا. فشل الإشارة (بناء/إرسال/إغلاق القناة) لا يجوز أبدًا أن
  * يُفسد تدفق الترخيص أو يمنع تنظيف finally.
  */
-const broadcastSafely = (message: SafeMessage): void => {
+const broadcastSafely = (variant: AppLicenseVariant, message: SafeMessage): void => {
   try {
     const Ctor = getBroadcastChannelCtor();
     if (!Ctor) return;
-    const channel = new Ctor(CHANNEL_NAME);
+    const channel = new Ctor(channelNameForVariant(variant));
     try {
       channel.postMessage(message);
     } finally {
@@ -55,14 +59,14 @@ const broadcastSafely = (message: SafeMessage): void => {
   }
 };
 
-/** يُستدعى من licenseEnrollment.ts عند بدء أي تسجيل محلي — إشارة آمنة فقط، بلا بيانات ترخيص. */
-export const notifyLicenseChanging = (generation: string): void => {
-  broadcastSafely({ type: "license-state-changing", generation, source: SESSION_ID });
+/** يُستدعى من licenseEnrollment.ts عند بدء أي تسجيل محلي لـvariant مُحدَّد — إشارة آمنة فقط، بلا بيانات ترخيص. */
+export const notifyLicenseChanging = (variant: AppLicenseVariant, generation: string): void => {
+  broadcastSafely(variant, { type: "license-state-changing", generation, source: SESSION_ID });
 };
 
 /** يُستدعى من licenseEnrollment.ts في finally دائمًا — حتى عند الفشل، لضمان عدم تعليق التبويبات الأخرى للأبد. */
-export const notifyLicenseChanged = (generation: string): void => {
-  broadcastSafely({ type: "license-state-changed", generation, source: SESSION_ID });
+export const notifyLicenseChanged = (variant: AppLicenseVariant, generation: string): void => {
+  broadcastSafely(variant, { type: "license-state-changed", generation, source: SESSION_ID });
 };
 
 export type LicenseCrossTabSync = { dispose: () => void };
@@ -81,12 +85,12 @@ export const initLicenseCrossTabSync = (variant: AppLicenseVariant): LicenseCros
 
     if (data.type === "license-state-changing") {
       activeRemoteGenerations.add(data.generation);
-      acquireWriteDenyHold(`remote:${data.generation}`);
+      acquireWriteDenyHold(variant, `remote:${data.generation}`);
       return;
     }
     if (data.type === "license-state-changed") {
       activeRemoteGenerations.delete(data.generation);
-      releaseWriteDenyHold(`remote:${data.generation}`);
+      releaseWriteDenyHold(variant, `remote:${data.generation}`);
       // تحديث الكاش المثبَت فقط — isWriteAllowedSync تُحسَم تلقائيًا بوجود/غياب
       // أي احتجاز آخر (محلي أو remote)، بلا أي حاجة لفحص "هل لا يزال هناك معلَّق".
       void getCurrentLicenseStatus(variant);
@@ -96,29 +100,30 @@ export const initLicenseCrossTabSync = (variant: AppLicenseVariant): LicenseCros
   const Ctor = getBroadcastChannelCtor();
   let channel: BroadcastChannel | null = null;
   try {
-    channel = Ctor ? new Ctor(CHANNEL_NAME) : null;
+    channel = Ctor ? new Ctor(channelNameForVariant(variant)) : null;
     channel?.addEventListener("message", handleMessage as EventListener);
   } catch {
     channel = null; // أفضل جهد — تعذّر إنشاء القناة لا يمنع بقية الوحدة من العمل
   }
 
   /**
-   * تعافٍ من إشارة "changing" مهجورة. يستخدم **نفس قفل FIX4 بالضبط** —
-   * الحصول عليه يُثبِت عمليًا أن لا تسجيل آخر يحمل القفل حاليًا (FIX6 §1:
-   * بفضل أن licenseEnrollment.ts يُسجِّل طلب القفل قبل البث، هذا الحاجز
-   * صحيح دائمًا — لا يمكن لاسترداد أن يسبق تسجيلًا حقيقيًا معلنًا بالفعل).
+   * تعافٍ من إشارة "changing" مهجورة. يستخدم **نفس قفل هذا الـvariant
+   * تحديدًا** — الحصول عليه يُثبِت عمليًا أن لا تسجيل آخر لنفس الـvariant
+   * يحمل القفل حاليًا (FIX6 §1: بفضل أن licenseEnrollment.ts يُسجِّل طلب
+   * القفل قبل البث، هذا الحاجز صحيح دائمًا — لا يمكن لاسترداد أن يسبق
+   * تسجيلًا حقيقيًا معلنًا بالفعل لنفس الـvariant).
    */
   const recoverAbandoned = async (): Promise<void> => {
     if (activeRemoteGenerations.size === 0) return;
     const locks = typeof navigator !== "undefined" ? (navigator as Navigator & { locks?: LockManager }).locks : undefined;
     if (locks) {
-      await locks.request(LICENSE_RESOURCE_LOCK_NAME, async () => {
-        for (const generation of Array.from(activeRemoteGenerations)) releaseWriteDenyHold(`remote:${generation}`);
+      await locks.request(lockNameForVariant(variant), async () => {
+        for (const generation of Array.from(activeRemoteGenerations)) releaseWriteDenyHold(variant, `remote:${generation}`);
         activeRemoteGenerations.clear();
       });
     } else {
       // لا Web Lock متاح — أفضل جهد ممكن بلا حاجز حقيقي؛ لا ادّعاء ضمان كامل.
-      for (const generation of Array.from(activeRemoteGenerations)) releaseWriteDenyHold(`remote:${generation}`);
+      for (const generation of Array.from(activeRemoteGenerations)) releaseWriteDenyHold(variant, `remote:${generation}`);
       activeRemoteGenerations.clear();
     }
     await getCurrentLicenseStatus(variant);
@@ -137,7 +142,7 @@ export const initLicenseCrossTabSync = (variant: AppLicenseVariant): LicenseCros
     // block قد يتخطاها فشل سابق (مثلًا channel.close() فاشلة) — لا يجوز أن
     // يُسرِّب أي احتجاز عبر إعادة تركيب/إزالة LicenseProvider (React). آمن
     // ومتكرِّر الاستدعاء (idempotent): إفراغ مجموعة فارغة لا يفعل شيئًا.
-    for (const generation of Array.from(activeRemoteGenerations)) releaseWriteDenyHold(`remote:${generation}`);
+    for (const generation of Array.from(activeRemoteGenerations)) releaseWriteDenyHold(variant, `remote:${generation}`);
     activeRemoteGenerations.clear();
 
     try {
@@ -152,4 +157,3 @@ export const initLicenseCrossTabSync = (variant: AppLicenseVariant): LicenseCros
 
   return { dispose };
 };
-

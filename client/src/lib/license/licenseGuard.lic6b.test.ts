@@ -23,30 +23,30 @@ const { isWriteAllowedSync, resetWriteGuardCacheForTests } = await import("./wri
 
 const DB_NAME = "khabir-license-local";
 const STORE_NAME = "state";
-const RECORD_KEY = "current";
+const recordKeyFor = (variant: string) => `current:${variant}`;
 
 const resetDatabase = () => new Promise<void>((resolve) => {
   const request = indexedDB.deleteDatabase(DB_NAME);
   request.onsuccess = () => resolve(); request.onerror = () => resolve(); request.onblocked = () => resolve();
 });
 
-const seedRaw = (state: unknown) => new Promise<void>((resolve, reject) => {
+const seedRaw = (state: unknown, variant: "teacher" | "director" = "teacher") => new Promise<void>((resolve, reject) => {
   const openRequest = indexedDB.open(DB_NAME, 1);
   openRequest.onupgradeneeded = () => { if (!openRequest.result.objectStoreNames.contains(STORE_NAME)) openRequest.result.createObjectStore(STORE_NAME); };
   openRequest.onsuccess = () => {
     const db = openRequest.result;
-    const putRequest = db.transaction(STORE_NAME, "readwrite").objectStore(STORE_NAME).put(state, RECORD_KEY);
+    const putRequest = db.transaction(STORE_NAME, "readwrite").objectStore(STORE_NAME).put(state, recordKeyFor(variant));
     putRequest.onsuccess = () => { db.close(); resolve(); };
     putRequest.onerror = () => { db.close(); reject(putRequest.error); };
   };
   openRequest.onerror = () => reject(openRequest.error);
 });
 
-const readRaw = () => new Promise<any>((resolve, reject) => {
+const readRaw = (variant: "teacher" | "director" = "teacher") => new Promise<any>((resolve, reject) => {
   const openRequest = indexedDB.open(DB_NAME, 1);
   openRequest.onsuccess = () => {
     const db = openRequest.result;
-    const getRequest = db.transaction(STORE_NAME, "readonly").objectStore(STORE_NAME).get(RECORD_KEY);
+    const getRequest = db.transaction(STORE_NAME, "readonly").objectStore(STORE_NAME).get(recordKeyFor(variant));
     getRequest.onsuccess = () => { db.close(); resolve(getRequest.result); };
     getRequest.onerror = () => { db.close(); reject(getRequest.error); };
   };
@@ -85,7 +85,7 @@ describe("licenseGuard — LIC-6B", () => {
   it("valid persisted v2 paid reverified", async () => {
     const paid = { ...basePayload, kind: "paid" as const };
     const code = await buildCode(paid, testKeyPair.privateKey);
-    await seedRaw({ kind: "entitlement", signedCode: code, lastSeenAt: "2026-09-09T00:00:00.000Z" });
+    await seedRaw({ kind: "entitlement", signedCode: code, lastSeenAt: "2026-09-09T00:00:00.000Z" }, "director");
     const status = await getCurrentLicenseStatus("director");
     expect(status.kind).toBe("paid_active");
     expect(status.writesAllowed).toBe(true);
@@ -128,7 +128,7 @@ describe("licenseGuard — LIC-6B", () => {
   it("wrong scope denied (توقيع صحيح)", async () => {
     const teacherOnly = { ...basePayload, scope: "teacher" as const };
     const code = await buildCode(teacherOnly, testKeyPair.privateKey);
-    await seedRaw({ kind: "entitlement", signedCode: code, lastSeenAt: "2026-09-09T00:00:00.000Z" });
+    await seedRaw({ kind: "entitlement", signedCode: code, lastSeenAt: "2026-09-09T00:00:00.000Z" }, "director");
     const status = await getCurrentLicenseStatus("director");
     expect(status.kind).toBe("wrong_scope");
     expect(status.writesAllowed).toBe(false);
@@ -146,7 +146,7 @@ describe("licenseGuard — LIC-6B", () => {
   it("expired paid denied", async () => {
     const expired = { ...basePayload, kind: "paid" as const, expiresAt: past };
     const code = await buildCode(expired, testKeyPair.privateKey);
-    await seedRaw({ kind: "entitlement", signedCode: code, lastSeenAt: "2026-09-09T00:00:00.000Z" });
+    await seedRaw({ kind: "entitlement", signedCode: code, lastSeenAt: "2026-09-09T00:00:00.000Z" }, "director");
     const status = await getCurrentLicenseStatus("director");
     expect(status.kind).toBe("paid_expired");
   });
@@ -169,9 +169,9 @@ describe("licenseGuard — LIC-6B", () => {
   it("verified wrong_scope يُحدِّث lastSeenAt فعليًا", async () => {
     const teacherOnly = { ...basePayload, scope: "teacher" as const };
     const code = await buildCode(teacherOnly, testKeyPair.privateKey);
-    await seedRaw({ kind: "entitlement", signedCode: code, lastSeenAt: "2020-01-01T00:00:00.000Z" });
+    await seedRaw({ kind: "entitlement", signedCode: code, lastSeenAt: "2020-01-01T00:00:00.000Z" }, "director");
     await getCurrentLicenseStatus("director");
-    const raw = await readRaw();
+    const raw = await readRaw("director");
     expect(raw.lastSeenAt).not.toBe("2020-01-01T00:00:00.000Z");
   });
 
@@ -244,7 +244,22 @@ describe("licenseGuard — LIC-6B", () => {
   it("PHASE LIC-6B-FIX2: طلب أحدث مرفوض + طلب أقدم مسموح يكتمل لاحقًا -> الكتابة المحمية تُرفَض، لكن status A الحقيقي يبقى صحيحًا لعرض الواجهة", async () => {
     const validCode = await buildCode(basePayload, testKeyPair.privateKey);
     await seedRaw({ kind: "entitlement", signedCode: validCode, lastSeenAt: "2026-09-09T00:00:00.000Z" });
+
+    // PHASE LIC-6D-B-3B.3: هجرة legacy الجديدة تُضيف جولة I/O إضافية داخل
+    // readCurrentState، فتُغيِّر توقيت التزامن الضمني — نتحكَّم صراحةً
+    // بلحظة "قراءة A الفعلية بدأت" عبر spy، لضمان أنها ترى البيانات
+    // الصالحة قبل تحديث seedRaw الثاني، مطابقًا لجوهر الاختبار الأصلي.
+    const realReadCurrentState = licenseStore.readCurrentState.bind(licenseStore);
+    let aStarted = false;
+    const readSpy = vi.spyOn(licenseStore, "readCurrentState").mockImplementation(async (variant: "teacher" | "director") => {
+      const result = await realReadCurrentState(variant);
+      if (!aStarted) aStarted = true;
+      return result;
+    });
+
     const promiseA = getCurrentLicenseStatus("teacher"); // A: سيحسب صالحًا (true)
+    await vi.waitFor(() => expect(aStarted).toBe(true));
+    readSpy.mockRestore();
 
     const expiredCode = await buildCode({ ...basePayload, expiresAt: past }, testKeyPair.privateKey);
     await seedRaw({ kind: "entitlement", signedCode: expiredCode, lastSeenAt: "2026-09-09T00:00:00.000Z" });
@@ -264,8 +279,21 @@ describe("licenseGuard — LIC-6B", () => {
     const validCode = await buildCode(basePayload, testKeyPair.privateKey);
     await seedRaw({ kind: "entitlement", signedCode: validCode, lastSeenAt: "2026-09-09T00:00:00.000Z" });
 
+    // PHASE LIC-6D-B-3B.3: نفس أسلوب التحكُّم الصريح — هجرة legacy الجديدة
+    // غيَّرت توقيت I/O الضمني.
+    const realReadCurrentState2 = licenseStore.readCurrentState.bind(licenseStore);
+    let contextAStarted = false;
+    const readSpy2 = vi.spyOn(licenseStore, "readCurrentState").mockImplementation(async (variant: "teacher" | "director") => {
+      const result = await realReadCurrentState2(variant);
+      if (!contextAStarted) contextAStarted = true;
+      return result;
+    });
+
     // طلب "سياق" A يبدأ (يُحاكي LicenseContext.refresh استدعاء getCurrentLicenseStatus مباشرة)
     const contextPromiseA = getCurrentLicenseStatus("teacher");
+    await vi.waitFor(() => expect(contextAStarted).toBe(true));
+    readSpy2.mockRestore();
+
     // طلب "كتابة مباشرة" B يبدأ لاحقًا، بعد تغيير البيانات إلى منتهية
     const expiredCode = await buildCode({ ...basePayload, expiresAt: past }, testKeyPair.privateKey);
     await seedRaw({ kind: "entitlement", signedCode: expiredCode, lastSeenAt: "2026-09-09T00:00:00.000Z" });

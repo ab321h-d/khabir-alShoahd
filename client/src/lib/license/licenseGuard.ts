@@ -46,26 +46,36 @@ const buildDeniedStatus = (nowIso: string): LicenseStatus => ({
 });
 
 /**
- * PHASE LIC-6B: عدَّاد طلب عالمي واحد (يتوافق مع تصميم writeGuardCache.ts
- * أحادي الفتحة القائم أصلًا — لا خريطة لكل variant). يحمي فقط تحديث الكاش
- * النهائي من طلب أقدم يكتمل متأخرًا بعد طلب أحدث. مستقل تمامًا عن أي عدَّاد
- * في LicenseContext.tsx (الأخير يحمي setStatus فقط، لا علاقة بينهما).
+ * PHASE LIC-6D-B-3B.3-B3-REAL-FIX: عدَّاد طلب مستقل **لكل variant** الآن —
+ * كان عدَّادًا عالميًا واحدًا مُشترَكًا (يتوافق مع تصميم writeGuardCache.ts
+ * القديم أحادي الفتحة)، مما يعني أن طلب director يزيد عدَّادًا يُقارَن به
+ * طلب teacher متزامن، فيُهمَل تحديث كاش teacher خطأً رغم عدم وجود أي طلب
+ * teacher أحدث فعليًا ينافسه — اقتران cross-variant يخالف عزل B3 مباشرة.
+ * الآن كل variant له عدَّاده الخاص المستقل تمامًا، مطابقًا لـwriteGuardCache
+ * المُقسَّم فعليًا لكل variant.
  */
-let latestRequestId = 0;
+const latestRequestIdByVariant = new Map<AppLicenseVariant, number>();
+
+const nextRequestId = (variant: AppLicenseVariant): number => {
+  const next = (latestRequestIdByVariant.get(variant) ?? 0) + 1;
+  latestRequestIdByVariant.set(variant, next);
+  return next;
+};
 
 /**
  * يعيد حالة الترخيص الحالية لتطبيق معيّن (معلم أو مدير)، ويحدّث ذاكرة
  * writeGuardCache المتزامنة. قد يُستدعى من أكثر من مصدر متزامن (LicenseContext
- * وحراس كتابة غير متزامنة مستقبلًا) — محمي بعدَّاد "الأحدث يفوز" الخاص به.
+ * وحراس كتابة غير متزامنة مستقبلًا) — محمي بعدَّاد "الأحدث يفوز" الخاص به،
+ * مستقل تمامًا لكل variant الآن.
  */
 export const getCurrentLicenseStatus = async (variant: AppLicenseVariant): Promise<LicenseStatus> => {
-  const requestId = ++latestRequestId;
+  const requestId = nextRequestId(variant);
   // PHASE LIC-6B: إصلاح أمني — يُصفَّر الكاش فورًا، قبل أي عمل غير متزامن،
   // لمنع بقاء قيمة "مسموح" قديمة أثناء إعادة تحقق قد تفشل.
   setCachedWriteStatus(variant, false);
 
   const now = new Date().toISOString();
-  const state = await licenseStore.readCurrentState();
+  const state = await licenseStore.readCurrentState(variant);
 
   let status: LicenseStatus;
 
@@ -78,7 +88,7 @@ export const getCurrentLicenseStatus = async (variant: AppLicenseVariant): Promi
       status = computeSignedEntitlementStatus(verification.payload, state.lastSeenAt, now, variant);
       // touch مسموحة حتى مع نتيجة دلالية سلبية (منتهٍ/نطاق خاطئ) — التوقيع
       // نفسه صحيح، فالوقت المُسجَّل موثوق.
-      await licenseStore.touchLastSeen(now);
+      await licenseStore.touchLastSeen(variant, now);
     } else {
       // فشل تحقق تشفيري: صفر touch، صفر حذف، صفر تجربة جديدة.
       status = buildDeniedStatus(now);
@@ -87,7 +97,7 @@ export const getCurrentLicenseStatus = async (variant: AppLicenseVariant): Promi
     // Legacy (trial/activated) موجود فعليًا — المسار الحالي بلا أي تغيير
     // دلالي، مؤكَّد أنه يجب أن يستمر بالعمل (لا كسر توافق legacy في B1).
     status = computeLicenseStatus(state, now, variant);
-    await licenseStore.touchLastSeen(now);
+    await licenseStore.touchLastSeen(variant, now);
   } else {
     // PHASE LIC-6D-B-3B.3-B1: state === null بالضبط — صفر استدعاء لـ
     // getOrInitializeState هنا نهائيًا، صفر تجربة محلية جديدة تُنشَأ أبدًا.
@@ -97,11 +107,11 @@ export const getCurrentLicenseStatus = async (variant: AppLicenseVariant): Promi
     // صفر touchLastSeen هنا عمدًا — لا يوجد سجل محلي أصلًا لتحديث وقته.
   }
 
-  // PHASE LIC-6B-FIX2: عدَّاد latestRequestId يحكم ملكية الكاش فقط — لا
-  // يجوز أن يُحوِّل النتيجة الحقيقية المحسوبة إلى "invalid" مصطنعة لمجرد أن
-  // طلب حراسة آخر بدأ لاحقًا (تدفقا الطلبات في LicenseContext وlicenseGuard
-  // منفصلان عمدًا، لا يمثلان نفس التسلسل). الحالة المُعادة دائمًا حقيقية.
-  if (requestId === latestRequestId) setCachedWriteStatus(variant, status.writesAllowed);
+  // PHASE LIC-6B-FIX2 (مُعاد تصميمها لكل variant في B3-REAL-FIX): عدَّاد
+  // requestId يحكم ملكية الكاش فقط لهذا الـvariant تحديدًا — لا يجوز أن
+  // يُحوِّل النتيجة الحقيقية المحسوبة إلى "invalid" مصطنعة لمجرد أن طلب
+  // حراسة آخر لنفس الـvariant بدأ لاحقًا. الحالة المُعادة دائمًا حقيقية.
+  if (requestId === latestRequestIdByVariant.get(variant)) setCachedWriteStatus(variant, status.writesAllowed);
   return status;
 };
 

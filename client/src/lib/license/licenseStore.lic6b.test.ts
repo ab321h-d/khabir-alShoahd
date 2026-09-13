@@ -11,7 +11,7 @@ const { licenseStore } = await import("./licenseStore");
 
 const DB_NAME = "khabir-license-local";
 const STORE_NAME = "state";
-const RECORD_KEY = "current";
+const RECORD_KEY = "current:teacher";
 
 const resetDatabase = () => new Promise<void>((resolve) => {
   const request = indexedDB.deleteDatabase(DB_NAME);
@@ -34,40 +34,40 @@ beforeEach(async () => { await resetDatabase(); });
 
 describe("licenseStore.readCurrentState — LIC-6B", () => {
   it("null state -> يعيد null بلا أي تهيئة (لا كتابة جديدة)", async () => {
-    const result = await licenseStore.readCurrentState();
+    const result = await licenseStore.readCurrentState("teacher");
     expect(result).toBeNull();
     // تأكيد: لا كتابة حدثت — لا يزال null بعد قراءتين متتاليتين
-    const second = await licenseStore.readCurrentState();
+    const second = await licenseStore.readCurrentState("teacher");
     expect(second).toBeNull();
   });
 
   it("legacy trial -> يُقرأ كما هو حرفيًا", async () => {
     const trial: TrialLicenseState = { kind: "trial", trialStartedAt: "2026-06-01T00:00:00.000Z", lastSeenAt: "2026-09-09T00:00:00.000Z" };
     await seedRaw(trial);
-    const result = await licenseStore.readCurrentState();
+    const result = await licenseStore.readCurrentState("teacher");
     expect(result).toEqual(trial);
   });
 
   it("legacy activated -> يُقرأ كما هو حرفيًا", async () => {
     const activated: ActivatedLicenseState = { kind: "activated", licenseId: "lic-1", scope: "both", activatedAt: "2026-06-01T00:00:00.000Z", expiresAt: "2027-06-01T00:00:00.000Z", lastSeenAt: "2026-09-09T00:00:00.000Z" };
     await seedRaw(activated);
-    const result = await licenseStore.readCurrentState();
+    const result = await licenseStore.readCurrentState("teacher");
     expect(result).toEqual(activated);
   });
 
   it("entitlement -> يُقرأ كما هو حرفيًا (signedCode الخام، بلا أي تحقق هنا)", async () => {
     const entitlement: SignedEntitlementState = { kind: "entitlement", signedCode: "fake.code", lastSeenAt: "2026-09-09T00:00:00.000Z" };
     await seedRaw(entitlement);
-    const result = await licenseStore.readCurrentState();
+    const result = await licenseStore.readCurrentState("teacher");
     expect(result).toEqual(entitlement);
   });
 
   it("لا يُعدِّل أي بيانات (قراءة متتالية تُعيد نفس المحتوى بلا تغيير)", async () => {
     const trial: TrialLicenseState = { kind: "trial", trialStartedAt: "2026-06-01T00:00:00.000Z", lastSeenAt: "2026-09-09T00:00:00.000Z" };
     await seedRaw(trial);
-    await licenseStore.readCurrentState();
-    await licenseStore.readCurrentState();
-    const result = await licenseStore.readCurrentState();
+    await licenseStore.readCurrentState("teacher");
+    await licenseStore.readCurrentState("teacher");
+    const result = await licenseStore.readCurrentState("teacher");
     expect(result).toEqual(trial);
   });
 });

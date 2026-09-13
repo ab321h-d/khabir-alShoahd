@@ -60,7 +60,7 @@ setCachedWriteStatusHoisted.mockImplementation(setCachedWriteStatus);
 const { initLicenseCrossTabSync, notifyLicenseChanging, notifyLicenseChanged, createGeneration } = await import("./licenseCrossTabSync");
 const { getCurrentLicenseStatus } = await import("./licenseGuard");
 
-const CHANNEL_NAME = "khabir-license-state";
+const CHANNEL_NAME = "khabir-license-state:teacher"; // كل اختبارات هذا الملف تستخدم teacher حصرًا
 
 /** يُحاكي تبويبًا "آخر" حقيقيًا بمصدر مختلف صراحة — لا يستخدم SESSION_ID الوحدة نفسها. */
 const postAsRemoteTab = (type: "license-state-changing" | "license-state-changed", generation: string) => {
@@ -94,7 +94,7 @@ describe("licenseCrossTabSync — LIC-6C.1-FIX5", () => {
     const spy = vi.fn();
     const inspector = new FakeBroadcastChannel(CHANNEL_NAME);
     inspector.addEventListener("message", spy);
-    notifyLicenseChanging(createGeneration());
+    notifyLicenseChanging("teacher", createGeneration());
     expect(spy).toHaveBeenCalledTimes(1);
     const receivedKeys = Object.keys((spy.mock.calls[0][0] as { data: object }).data).sort();
     expect(receivedKeys).toEqual(["generation", "source", "type"].sort());
@@ -105,7 +105,7 @@ describe("licenseCrossTabSync — LIC-6C.1-FIX5", () => {
     const spy = vi.fn();
     const inspector = new FakeBroadcastChannel(CHANNEL_NAME);
     inspector.addEventListener("message", spy);
-    notifyLicenseChanged(createGeneration());
+    notifyLicenseChanged("teacher", createGeneration());
     const receivedKeys = Object.keys((spy.mock.calls[0][0] as { data: object }).data).sort();
     expect(receivedKeys).toEqual(["generation", "source", "type"].sort());
     inspector.close();
@@ -144,7 +144,7 @@ describe("licenseCrossTabSync — LIC-6C.1-FIX5", () => {
   it("13) رسالة الوحدة المحلية نفسها (نفس SESSION_ID) تُتجاهَل تلقائيًا ولا تُعامَل كـremote", () => {
     const sync = initLicenseCrossTabSync("teacher");
     setCachedWriteStatus("teacher", true);
-    notifyLicenseChanging(createGeneration());
+    notifyLicenseChanging("teacher", createGeneration());
     expect(isWriteAllowedSync("teacher")).toBe(true);
     sync.dispose();
   });
@@ -155,8 +155,8 @@ describe("licenseCrossTabSync — LIC-6C.1-FIX5", () => {
     delete globalThis.BroadcastChannel;
     expect(() => {
       const sync = initLicenseCrossTabSync("teacher");
-      notifyLicenseChanging(createGeneration());
-      notifyLicenseChanged(createGeneration());
+      notifyLicenseChanging("teacher", createGeneration());
+      notifyLicenseChanged("teacher", createGeneration());
       sync.dispose();
     }).not.toThrow();
     (globalThis as { BroadcastChannel?: unknown }).BroadcastChannel = original;
@@ -173,7 +173,7 @@ describe("licenseCrossTabSync — LIC-6C.1-FIX5", () => {
     window.dispatchEvent(new Event("focus"));
     await new Promise((r) => setTimeout(r, 10));
 
-    expect(requestSpy).toHaveBeenCalledWith("khabir-license-enrollment-current", expect.any(Function));
+    expect(requestSpy).toHaveBeenCalledWith("khabir-license-enrollment-current:teacher", expect.any(Function));
     expect(isWriteAllowedSync("teacher")).toBe(true);
 
     sync.dispose();
@@ -253,7 +253,7 @@ describe("LIC-6C.1-FIX6 §1 — استرداد لا يمكنه تجاوز تسج
     const sync = initLicenseCrossTabSync("teacher");
 
     // A: طلب قفل حقيقي (مُسجَّل أولًا، لا يزال محتجزًا)
-    const aLockPromise = requestSpy("khabir-license-enrollment-current", async () => { callOrder.push("A-done"); });
+    const aLockPromise = requestSpy("khabir-license-enrollment-current:teacher", async () => { callOrder.push("A-done"); });
 
     // B: استرداد يبدأ الآن (يطلب نفس القفل) بينما A لا يزال يحمله
     postAsRemoteTab("license-state-changing", createGeneration());
@@ -355,7 +355,7 @@ describe("LIC-6C.1-FIX6.1 — dispose يُحرِّر كل احتجازات remot
 
   it("9) احتجاز محلي (local) لا يتأثر بـdispose طبقة المزامنة — لا تغيير في دلالة الاحتجاز المحلي/Web Locks", () => {
     const sync = initLicenseCrossTabSync("teacher");
-    acquireWriteDenyHold("local:some-enrollment");
+    acquireWriteDenyHold("teacher", "local:some-enrollment");
     sync.dispose();
     // الاحتجاز المحلي مستقل تمامًا، dispose لا تلمسه إطلاقًا (خارج نطاقها)
     expect(isWriteAllowedSync("teacher")).toBe(false);

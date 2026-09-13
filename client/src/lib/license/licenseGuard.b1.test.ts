@@ -24,19 +24,19 @@ const { isWriteAllowedSync, resetWriteGuardCacheForTests } = await import("./wri
 
 const DB_NAME = "khabir-license-local";
 const STORE_NAME = "state";
-const RECORD_KEY = "current";
+const recordKeyFor = (variant) => `current:${variant}`;
 
 const resetDatabase = () => new Promise<void>((resolve) => {
   const request = indexedDB.deleteDatabase(DB_NAME);
   request.onsuccess = () => resolve(); request.onerror = () => resolve(); request.onblocked = () => resolve();
 });
 
-const seedRaw = (state: unknown) => new Promise<void>((resolve, reject) => {
+const seedRaw = (state: unknown, variant: "teacher" | "director" = "teacher") => new Promise<void>((resolve, reject) => {
   const openRequest = indexedDB.open(DB_NAME, 1);
   openRequest.onupgradeneeded = () => { if (!openRequest.result.objectStoreNames.contains(STORE_NAME)) openRequest.result.createObjectStore(STORE_NAME); };
   openRequest.onsuccess = () => {
     const db = openRequest.result;
-    const putRequest = db.transaction(STORE_NAME, "readwrite").objectStore(STORE_NAME).put(state, RECORD_KEY);
+    const putRequest = db.transaction(STORE_NAME, "readwrite").objectStore(STORE_NAME).put(state, recordKeyFor(variant));
     putRequest.onsuccess = () => { db.close(); resolve(); };
     putRequest.onerror = () => { db.close(); reject(putRequest.error); };
   };
@@ -57,7 +57,7 @@ describe("LIC-6D-B-3B.3-B1: إغلاق مسار Trial المحلية التلق�
   it("1) قاعدة ترخيص فارغة تمامًا -> صفر trial تُنشَأ", async () => {
     const status = await getCurrentLicenseStatus("teacher");
     expect(status.kind).toBe("missing");
-    const raw = await licenseStore.readCurrentState();
+    const raw = await licenseStore.readCurrentState("teacher");
     expect(raw).toBeNull(); // صفر أي شيء كُتِب في القاعدة
   });
 
@@ -72,7 +72,7 @@ describe("LIC-6D-B-3B.3-B1: إغلاق مسار Trial المحلية التلق�
     await getCurrentLicenseStatus("teacher");
     const status = await getCurrentLicenseStatus("teacher");
     expect(status.kind).toBe("missing");
-    const raw = await licenseStore.readCurrentState();
+    const raw = await licenseStore.readCurrentState("teacher");
     expect(raw).toBeNull();
   });
 
@@ -82,7 +82,7 @@ describe("LIC-6D-B-3B.3-B1: إغلاق مسار Trial المحلية التلق�
       issuedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 90 * 86400000).toISOString(),
     };
     const signedCode = await buildCode(payload, testKeyPair.privateKey);
-    await licenseStore.saveVerifiedSignedEntitlement(signedCode, new Date().toISOString());
+    await licenseStore.saveVerifiedSignedEntitlement(signedCode, new Date().toISOString(), "teacher");
     const activeStatus = await getCurrentLicenseStatus("teacher");
     expect(activeStatus.writesAllowed).toBe(true);
 
@@ -93,7 +93,7 @@ describe("LIC-6D-B-3B.3-B1: إغلاق مسار Trial المحلية التلق�
   });
 
   it("5) resetLicenseExplicitly -> صفر trial بديلة، الحالة تصبح missing", async () => {
-    const result = await licenseStore.resetLicenseExplicitly();
+    const result = await licenseStore.resetLicenseExplicitly("teacher");
     expect(result).toBeNull();
     const status = await getCurrentLicenseStatus("teacher");
     expect(status.kind).toBe("missing");
@@ -118,7 +118,7 @@ describe("LIC-6D-B-3B.3-B1: إغلاق مسار Trial المحلية التلق�
       issuedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 365 * 86400000).toISOString(),
     };
     const signedCode = await buildCode(payload, testKeyPair.privateKey);
-    await licenseStore.saveVerifiedSignedEntitlement(signedCode, new Date().toISOString());
+    await licenseStore.saveVerifiedSignedEntitlement(signedCode, new Date().toISOString(), "teacher");
     const status = await getCurrentLicenseStatus("teacher");
     expect(status.kind).toBe("wrong_scope");
     expect(status.writesAllowed).toBe(false);
@@ -130,7 +130,7 @@ describe("LIC-6D-B-3B.3-B1: إغلاق مسار Trial المحلية التلق�
       issuedAt: "2020-01-01T00:00:00.000Z", expiresAt: "2020-04-01T00:00:00.000Z",
     };
     const signedCode = await buildCode(payload, testKeyPair.privateKey);
-    await licenseStore.saveVerifiedSignedEntitlement(signedCode, new Date().toISOString());
+    await licenseStore.saveVerifiedSignedEntitlement(signedCode, new Date().toISOString(), "teacher");
     const status = await getCurrentLicenseStatus("teacher");
     expect(status.kind).toBe("trial_expired");
     expect(status.writesAllowed).toBe(false);
@@ -164,7 +164,7 @@ describe("LIC-6D-B-3B.3-B1: إغلاق مسار Trial المحلية التلق�
       issuedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 365 * 86400000).toISOString(),
     };
     const signedCode = await buildCode(payload, testKeyPair.privateKey);
-    await licenseStore.saveVerifiedSignedEntitlement(signedCode, new Date().toISOString());
+    await licenseStore.saveVerifiedSignedEntitlement(signedCode, new Date().toISOString(), "teacher");
     await getCurrentLicenseStatus("teacher");
     expect(isWriteAllowedSync("teacher")).toBe(true);
 
@@ -180,7 +180,7 @@ describe("LIC-6D-B-3B.3-B1: إغلاق مسار Trial المحلية التلق�
       issuedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 365 * 86400000).toISOString(),
     };
     const signedCode = await buildCode(payload, testKeyPair.privateKey);
-    await licenseStore.saveVerifiedSignedEntitlement(signedCode, new Date().toISOString());
+    await licenseStore.saveVerifiedSignedEntitlement(signedCode, new Date().toISOString(), "teacher");
     const status = await getCurrentLicenseStatus("teacher");
     expect(status.kind).toBe("paid_active");
     expect(status.writesAllowed).toBe(true);

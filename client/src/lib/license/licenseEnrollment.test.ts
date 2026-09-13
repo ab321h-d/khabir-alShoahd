@@ -23,30 +23,30 @@ const { isWriteAllowedSync, resetWriteGuardCacheForTests } = await import("./wri
 
 const DB_NAME = "khabir-license-local";
 const STORE_NAME = "state";
-const RECORD_KEY = "current";
+const recordKeyFor = (variant: string) => `current:${variant}`;
 
 const resetDatabase = () => new Promise<void>((resolve) => {
   const request = indexedDB.deleteDatabase(DB_NAME);
   request.onsuccess = () => resolve(); request.onerror = () => resolve(); request.onblocked = () => resolve();
 });
 
-const seedRaw = (state: unknown) => new Promise<void>((resolve, reject) => {
+const seedRaw = (state: unknown, variant: "teacher" | "director" = "teacher") => new Promise<void>((resolve, reject) => {
   const openRequest = indexedDB.open(DB_NAME, 1);
   openRequest.onupgradeneeded = () => { if (!openRequest.result.objectStoreNames.contains(STORE_NAME)) openRequest.result.createObjectStore(STORE_NAME); };
   openRequest.onsuccess = () => {
     const db = openRequest.result;
-    const putRequest = db.transaction(STORE_NAME, "readwrite").objectStore(STORE_NAME).put(state, RECORD_KEY);
+    const putRequest = db.transaction(STORE_NAME, "readwrite").objectStore(STORE_NAME).put(state, recordKeyFor(variant));
     putRequest.onsuccess = () => { db.close(); resolve(); };
     putRequest.onerror = () => { db.close(); reject(putRequest.error); };
   };
   openRequest.onerror = () => reject(openRequest.error);
 });
 
-const readRaw = () => new Promise<any>((resolve, reject) => {
+const readRaw = (variant: "teacher" | "director" = "teacher") => new Promise<any>((resolve, reject) => {
   const openRequest = indexedDB.open(DB_NAME, 1);
   openRequest.onsuccess = () => {
     const db = openRequest.result;
-    const getRequest = db.transaction(STORE_NAME, "readonly").objectStore(STORE_NAME).get(RECORD_KEY);
+    const getRequest = db.transaction(STORE_NAME, "readonly").objectStore(STORE_NAME).get(recordKeyFor(variant));
     getRequest.onsuccess = () => { db.close(); resolve(getRequest.result); };
     getRequest.onerror = () => { db.close(); reject(getRequest.error); };
   };
@@ -90,7 +90,7 @@ describe("licenseEnrollment — LIC-6C.1", () => {
   it("4) malformed code rejected — no prior state -> cache restoration via central path now yields missing (no fresh trial written), matching LIC-6D-B-3B.3-B1 contract", async () => {
     const result = await enrollSignedEntitlement("not-even-two-parts", "teacher");
     expect(result.status).toBe("invalid");
-    const after = await licenseStore.readCurrentState();
+    const after = await licenseStore.readCurrentState("teacher");
     expect(after).toBeNull(); // PHASE B1: صفر trial تُكتَب في القاعدة عند غياب حالة سابقة
   });
 
@@ -98,7 +98,7 @@ describe("licenseEnrollment — LIC-6C.1", () => {
     const code = await buildCode({ ...trial, expiresAt: past }, testKeyPair.privateKey);
     const result = await enrollSignedEntitlement(code, "teacher");
     expect(result.status).toBe("expired");
-    const after = await licenseStore.readCurrentState();
+    const after = await licenseStore.readCurrentState("teacher");
     expect(after).toBeNull();
   });
 
@@ -249,7 +249,7 @@ describe("licenseEnrollment — LIC-6C.1", () => {
     const oldCode = await buildCode(trial, testKeyPair.privateKey);
     await seedRaw({ kind: "entitlement", signedCode: oldCode, lastSeenAt: "2026-09-09T00:00:00.000Z" });
     await enrollSignedEntitlement("garbage", "teacher");
-    const after = await licenseStore.readCurrentState();
+    const after = await licenseStore.readCurrentState("teacher");
     expect(after?.kind).toBe("entitlement");
     expect((after as { signedCode: string }).signedCode).toBe(oldCode); // signedCode لم يتغيَّر
     // lastSeenAt قد تتقدَّم شرعًا (لمسة عادية عبر إعادة الإثبات المركزية)، هذا متوقَّع وصحيح، لا خطأ
@@ -340,14 +340,16 @@ describe("licenseEnrollment — LIC-6C.1", () => {
     expect(isWriteAllowedSync("teacher")).toBe(true);
   });
 
-  it("FIX-2B) existing valid paid + wrong-scope code -> old state unchanged, cache restored", async () => {
+  it("FIX-2B) existing valid paid (خانة teacher) + wrong-scope code لـdirector -> رُفِض، خانة director تبقى missing كما كانت (لم تُلمَس)", async () => {
     const existingCode = await buildCode({ ...trial, kind: "paid" }, testKeyPair.privateKey);
-    await seedRaw({ kind: "entitlement", signedCode: existingCode, lastSeenAt: "2026-09-09T00:00:00.000Z" });
+    await seedRaw({ kind: "entitlement", signedCode: existingCode, lastSeenAt: "2026-09-09T00:00:00.000Z" }, "teacher");
     const wrongScopeCode = await buildCode({ ...trial, entitlementId: "e2", scope: "teacher" }, testKeyPair.privateKey);
     const result = await enrollSignedEntitlement(wrongScopeCode, "director");
     expect(result.status).toBe("wrong_scope");
-    expect((await readRaw()).signedCode).toBe(existingCode);
-    expect(isWriteAllowedSync("director")).toBe(true);
+    // خانة director لم تُلمَس إطلاقًا (كانت missing أصلًا، لا علاقة لها بخانة teacher المنفصلة)
+    expect(isWriteAllowedSync("director")).toBe(false);
+    // خانة teacher الأصلية سليمة تمامًا كما كانت
+    expect((await readRaw("teacher")).signedCode).toBe(existingCode);
   });
 
   it("FIX-2C) existing valid paid + downgrade rejected -> old state unchanged, cache restored", async () => {
@@ -380,10 +382,10 @@ describe("licenseEnrollment — LIC-6C.1", () => {
     let releaseA: () => void = () => {};
     const gate = new Promise<void>((resolve) => { releaseA = resolve; });
     const callOrder: string[] = [];
-    const saveSpy = vi.spyOn(licenseStore, "saveVerifiedSignedEntitlement").mockImplementation(async (code: string, lastSeenAt: string) => {
+    const saveSpy = vi.spyOn(licenseStore, "saveVerifiedSignedEntitlement").mockImplementation(async (code: string, lastSeenAt: string, variant: "teacher" | "director") => {
       callOrder.push(code === codeA ? "A" : "B");
       if (code === codeA) await gate; // A متوقفة يدويًا داخل الحفظ نفسه — سيناريو §5 بالضبط
-      return realSave(code, lastSeenAt);
+      return realSave(code, lastSeenAt, variant);
     });
 
     const promiseA = enrollSignedEntitlement(codeA, "teacher");
@@ -415,9 +417,9 @@ describe("licenseEnrollment — LIC-6C.1", () => {
     let releaseA: () => void = () => {};
     const gateA = new Promise<void>((resolve) => { releaseA = resolve; });
     let aPaused = false;
-    const readSpy = vi.spyOn(licenseStore, "readCurrentState").mockImplementation(async () => {
+    const readSpy = vi.spyOn(licenseStore, "readCurrentState").mockImplementation(async (variant: "teacher" | "director") => {
       if (!aPaused) { aPaused = true; await gateA; }
-      return realReadCurrentState();
+      return realReadCurrentState(variant);
     });
 
     // A: trial جديد مقابل paid موجود بالفعل -> downgrade_rejected -> fail() -> استعادة (readCurrentState تتوقف هنا داخل isReplacementAllowed)
@@ -449,7 +451,7 @@ describe("licenseEnrollment — LIC-6C.1", () => {
     readSpy.mockRestore();
   });
 
-  it("FIX3-2) [§6, عبر variant مختلف] Teacher A محتجزة داخل نداء الحفظ نفسه، Director B يُستدعى أثناء ذلك — B لا يدخل منطقة الكتابة الحساسة حتى يكتمل A، صفر كتابة متزامنة على نفس السجل المشترك، الترتيب النهائي يتبع الطابور فقط", async () => {
+  it("FIX3-2) [§6-B3.3، عبر variant مختلف بعد الفصل] Teacher A محتجزة داخل نداء الحفظ نفسه، Director B يُستدعى أثناء ذلك — B لا يُحجَب إطلاقًا الآن (سجلان مستقلان تمامًا، أقفال منفصلة لكل variant)، ينجز بلا انتظار A", async () => {
     const codeA = await buildCode(trial, testKeyPair.privateKey); // Teacher
     const codeB = await buildCode({ ...trial, entitlementId: "e2", kind: "paid", scope: "director" }, testKeyPair.privateKey); // Director
 
@@ -457,33 +459,34 @@ describe("licenseEnrollment — LIC-6C.1", () => {
     let releaseA: () => void = () => {};
     const gate = new Promise<void>((resolve) => { releaseA = resolve; });
     const callOrder: string[] = [];
-    const saveSpy = vi.spyOn(licenseStore, "saveVerifiedSignedEntitlement").mockImplementation(async (code: string, lastSeenAt: string) => {
+    const saveSpy = vi.spyOn(licenseStore, "saveVerifiedSignedEntitlement").mockImplementation(async (code: string, lastSeenAt: string, variant: "teacher" | "director") => {
       callOrder.push(code === codeA ? "teacher-A" : "director-B");
-      if (code === codeA) await gate; // Teacher A محتجزة داخل الحفظ نفسه فعليًا — المورد المشترك مقفَل الآن
-      return realSave(code, lastSeenAt);
+      if (code === codeA) await gate; // Teacher A محتجزة داخل الحفظ نفسه فعليًا
+      return realSave(code, lastSeenAt, variant);
     });
 
     const promiseA = enrollSignedEntitlement(codeA, "teacher");
     await vi.waitFor(() => expect(callOrder).toContain("teacher-A"));
 
-    // Director B يُستدعى الآن أثناء احتجاز Teacher A داخل الحفظ — على نفس السجل المشترك تمامًا
+    // PHASE LIC-6D-B-3B.3: بعد فصل الأقفال/الطوابير حسب variant، Director B
+    // يدخل منطقة الحفظ الحساسة الخاصة به فورًا، بلا انتظار Teacher A إطلاقًا
     const promiseB = enrollSignedEntitlement(codeB, "director");
-    // كلا الكتابتين متزامنتَي الاستدعاء منطقيًا، لكن يجب ألا يدخل B منطقة الحفظ الحساسة فعليًا بعد
-    expect(callOrder).toEqual(["teacher-A"]); // B لم يصل بعد لاستدعاء saveVerifiedSignedEntitlement إطلاقًا
+    await vi.waitFor(() => expect(callOrder).toContain("director-B"));
+    expect(callOrder).toEqual(["teacher-A", "director-B"]); // B دخل فورًا، لم ينتظر A
 
     releaseA();
     const [resultA, resultB] = await Promise.all([promiseA, promiseB]);
 
     expect(resultA.status).toBe("success");
     expect(resultB.status).toBe("success");
-    // الترتيب الحتمي: القفل العالمي الواحد (لا مقسَّم حسب variant) يضمن Teacher أولًا بالكامل، ثم Director
-    expect(callOrder).toEqual(["teacher-A", "director-B"]);
 
-    // السجل المشترك النهائي = آخر من كتب فعليًا (Director B)، بصرف النظر عن الـvariant المنطقي —
-    // مؤكِّدًا أن المورد الحقيقي واحد فعلًا، لا سجلين منفصلين
-    const finalRaw = await readRaw();
-    const finalPayload = JSON.parse(atob(finalRaw.signedCode.split(".")[0].replace(/-/g, "+").replace(/_/g, "/")));
-    expect(finalPayload.entitlementId).toBe("e2");
+    // سجلان مستقلان تمامًا الآن — كلاهما محفوظان بشكل مستقل، صفر تداخل
+    const teacherRaw = await readRaw("teacher");
+    const directorRaw = await readRaw("director");
+    const teacherPayload = JSON.parse(atob(teacherRaw.signedCode.split(".")[0].replace(/-/g, "+").replace(/_/g, "/")));
+    const directorPayload = JSON.parse(atob(directorRaw.signedCode.split(".")[0].replace(/-/g, "+").replace(/_/g, "/")));
+    expect(teacherPayload.entitlementId).toBe(trial.entitlementId);
+    expect(directorPayload.entitlementId).toBe("e2");
 
     saveSpy.mockRestore();
   });
@@ -496,37 +499,38 @@ describe("Web Locks API — LIC-6C.1-FIX4", () => {
     Object.defineProperty(globalThis, "navigator", { value: originalNavigator, configurable: true, writable: true });
   });
 
-  it("1) navigator.locks متاح -> مسار Web Lock يُستخدَم فعليًا", async () => {
+  it("1) navigator.locks متاح -> مسار Web Lock يُستخدَم فعليًا (قفل variant + قفل هجرة داخلي محتمل، لا عدد ثابت بعد الفصل)", async () => {
     const requestSpy = vi.fn((_name: string, callback: () => Promise<unknown>) => callback());
     Object.defineProperty(globalThis, "navigator", { value: { locks: { request: requestSpy } }, configurable: true, writable: true });
 
     const code = await buildCode(trial, testKeyPair.privateKey);
     const result = await enrollSignedEntitlement(code, "teacher");
     expect(result.status).toBe("success");
-    expect(requestSpy).toHaveBeenCalledTimes(1);
+    expect(requestSpy.mock.calls.length).toBeGreaterThanOrEqual(1);
+    expect(requestSpy.mock.calls.some((call) => call[0] === "khabir-license-enrollment-current:teacher")).toBe(true);
   });
 
-  it("2) اسم القفل ثابت وصحيح حرفيًا", async () => {
+  it("2) اسم القفل مُدرِك لـvariant الآن (PHASE LIC-6D-B-3B.3: تطور عقد متعمَّد عن اسم ثابت موحَّد سابقًا)", async () => {
     const requestSpy = vi.fn((_name: string, callback: () => Promise<unknown>) => callback());
     Object.defineProperty(globalThis, "navigator", { value: { locks: { request: requestSpy } }, configurable: true, writable: true });
 
     const code = await buildCode(trial, testKeyPair.privateKey);
     await enrollSignedEntitlement(code, "teacher");
-    expect(requestSpy.mock.calls[0][0]).toBe("khabir-license-enrollment-current");
+    expect(requestSpy.mock.calls.some((call) => call[0] === "khabir-license-enrollment-current:teacher")).toBe(true);
   });
 
-  it("3) Teacher وDirector يستخدمان نفس اسم القفل حرفيًا (المورد الحقيقي واحد)", async () => {
+  it("3) PHASE LIC-6D-B-3B.3 (تطور عقد متعمَّد): Teacher وDirector يستخدمان الآن اسمَي قفل مختلفَين تمامًا (سجلان مستقلان، لا مورد مشترَك بعد الآن)", async () => {
     const requestSpy = vi.fn((_name: string, callback: () => Promise<unknown>) => callback());
     Object.defineProperty(globalThis, "navigator", { value: { locks: { request: requestSpy } }, configurable: true, writable: true });
 
     const codeT = await buildCode(trial, testKeyPair.privateKey);
     await enrollSignedEntitlement(codeT, "teacher");
     await resetDatabase();
-    const codeD = await buildCode({ ...trial, entitlementId: "e2" }, testKeyPair.privateKey);
+    const codeD = await buildCode({ ...trial, entitlementId: "e2", scope: "director" }, testKeyPair.privateKey);
     await enrollSignedEntitlement(codeD, "director");
 
-    expect(requestSpy.mock.calls[0][0]).toBe(requestSpy.mock.calls[1][0]);
-    expect(requestSpy.mock.calls[0][0]).toBe("khabir-license-enrollment-current");
+    expect(requestSpy.mock.calls.some((call) => call[0] === "khabir-license-enrollment-current:teacher")).toBe(true);
+    expect(requestSpy.mock.calls.some((call) => call[0] === "khabir-license-enrollment-current:director")).toBe(true);
   });
 
   it("4) navigator.locks غير متاح -> fallback الذاكرة المحلية يعمل بصحة كاملة", async () => {
@@ -576,8 +580,11 @@ describe("LIC-6C.1-FIX6 §1 — ترتيب القفل قبل البث", () => {
     const code = await buildCode(trial, testKeyPair.privateKey);
     await enrollSignedEntitlement(code, "teacher");
 
-    // طلب القفل يجب أن يُسجَّل أولًا، ثم البث بعده مباشرة — لا العكس أبدًا
-    expect(callOrder).toEqual(["lock-requested", "changing-broadcast"]);
+    // طلب القفل الرئيسي يجب أن يُسجَّل أولًا، ثم البث بعده مباشرة — لا العكس
+    // أبدًا. عناصر إضافية بعدهما (قفل الهجرة الجديد يُستدعى داخليًا لاحقًا
+    // ضمن قراءات readCurrentState المتعددة أثناء enrollWithinLock نفسها —
+    // سلوك صحيح متوقَّع بعد فصل التخزين، لا يخالف الجوهر الأمني المُختبَر هنا).
+    expect(callOrder.slice(0, 2)).toEqual(["lock-requested", "changing-broadcast"]);
 
     notifySpy.mockRestore();
   });

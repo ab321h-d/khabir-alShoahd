@@ -27,7 +27,7 @@ const { licenseStore } = await import("./licenseStore");
 
 const DB_NAME = "khabir-license-local";
 const STORE_NAME = "state";
-const RECORD_KEY = "current";
+const RECORD_KEY = "current:teacher";
 
 const resetDatabase = () => new Promise<void>((resolve) => {
   const request = indexedDB.deleteDatabase(DB_NAME);
@@ -65,39 +65,39 @@ beforeEach(async () => { await resetDatabase(); });
 describe("touchLastSeen — lastSeenAt رتيبة، لا تتحرك للخلف أبدًا", () => {
   it("1) forward: 09-09 -> 09-10 => يُحدَّث إلى 09-10", async () => {
     await seedState(trialState("2026-09-09T00:00:00.000Z"));
-    await licenseStore.touchLastSeen("2026-09-10T00:00:00.000Z");
+    await licenseStore.touchLastSeen("teacher", "2026-09-10T00:00:00.000Z");
     expect((await readRawState()).lastSeenAt).toBe("2026-09-10T00:00:00.000Z");
   });
 
   it("2) equal: 09-09 -> 09-09 => يبقى 09-09 (بلا كتابة إضافية مطلوبة)", async () => {
     await seedState(trialState("2026-09-09T00:00:00.000Z"));
-    await licenseStore.touchLastSeen("2026-09-09T00:00:00.000Z");
+    await licenseStore.touchLastSeen("teacher", "2026-09-09T00:00:00.000Z");
     expect((await readRawState()).lastSeenAt).toBe("2026-09-09T00:00:00.000Z");
   });
 
   it("3) small rollback: 10:00 -> 09:58 => يبقى 10:00", async () => {
     await seedState(trialState("2026-09-09T10:00:00.000Z"));
-    await licenseStore.touchLastSeen("2026-09-09T09:58:00.000Z");
+    await licenseStore.touchLastSeen("teacher", "2026-09-09T09:58:00.000Z");
     expect((await readRawState()).lastSeenAt).toBe("2026-09-09T10:00:00.000Z");
   });
 
   it("4) large rollback: 09-09 -> 09-01 => يبقى 09-09", async () => {
     await seedState(trialState("2026-09-09T00:00:00.000Z"));
-    await licenseStore.touchLastSeen("2026-09-01T00:00:00.000Z");
+    await licenseStore.touchLastSeen("teacher", "2026-09-01T00:00:00.000Z");
     expect((await readRawState()).lastSeenAt).toBe("2026-09-09T00:00:00.000Z");
   });
 
   it("5) repeated rollback: عدة touch بأوقات أقدم متتالية => lastSeenAt لا ينخفض إطلاقًا عبر أي منها", async () => {
     await seedState(trialState("2026-09-09T00:00:00.000Z"));
-    await licenseStore.touchLastSeen("2026-09-05T00:00:00.000Z");
-    await licenseStore.touchLastSeen("2026-08-01T00:00:00.000Z");
-    await licenseStore.touchLastSeen("2026-01-01T00:00:00.000Z");
+    await licenseStore.touchLastSeen("teacher", "2026-09-05T00:00:00.000Z");
+    await licenseStore.touchLastSeen("teacher", "2026-08-01T00:00:00.000Z");
+    await licenseStore.touchLastSeen("teacher", "2026-01-01T00:00:00.000Z");
     expect((await readRawState()).lastSeenAt).toBe("2026-09-09T00:00:00.000Z");
   });
 
   it("6) بقية حقول TrialLicenseState لا تتغيَّر إطلاقًا بسبب touchLastSeen", async () => {
     await seedState(trialState("2026-09-09T00:00:00.000Z"));
-    await licenseStore.touchLastSeen("2026-09-10T00:00:00.000Z");
+    await licenseStore.touchLastSeen("teacher", "2026-09-10T00:00:00.000Z");
     const result = await readRawState() as TrialLicenseState;
     expect(result.kind).toBe("trial");
     expect(result.trialStartedAt).toBe("2026-06-01T00:00:00.000Z");
@@ -105,7 +105,7 @@ describe("touchLastSeen — lastSeenAt رتيبة، لا تتحرك للخلف �
 
   it("7) بقية حقول ActivatedLicenseState (licenseId/scope/activatedAt/expiresAt) تبقى كما هي، فقط lastSeenAt يتحرك للأمام", async () => {
     await seedState(activatedState("2026-09-09T00:00:00.000Z"));
-    await licenseStore.touchLastSeen("2026-09-10T00:00:00.000Z");
+    await licenseStore.touchLastSeen("teacher", "2026-09-10T00:00:00.000Z");
     const result = await readRawState() as ActivatedLicenseState;
     expect(result.kind).toBe("activated");
     expect(result.licenseId).toBe("lic-1");
@@ -115,12 +115,12 @@ describe("touchLastSeen — lastSeenAt رتيبة، لا تتحرك للخلف �
     expect(result.lastSeenAt).toBe("2026-09-10T00:00:00.000Z");
 
     // rollback بعد التفعيل أيضًا لا يُحرِّك lastSeenAt للخلف
-    await licenseStore.touchLastSeen("2026-01-01T00:00:00.000Z");
+    await licenseStore.touchLastSeen("teacher", "2026-01-01T00:00:00.000Z");
     expect((await readRawState()).lastSeenAt).toBe("2026-09-10T00:00:00.000Z");
   });
 
   it("8) لا حالة موجودة أصلًا => touchLastSeen لا تُنشئ أي حالة جديدة من تلقاء نفسها", async () => {
-    await licenseStore.touchLastSeen("2026-09-10T00:00:00.000Z");
+    await licenseStore.touchLastSeen("teacher", "2026-09-10T00:00:00.000Z");
     const database = await new Promise<IDBDatabase>((resolve) => {
       const request = indexedDB.open(DB_NAME, 1);
       request.onupgradeneeded = () => { if (!request.result.objectStoreNames.contains(STORE_NAME)) request.result.createObjectStore(STORE_NAME); };

@@ -3,7 +3,7 @@ import { verifySignedEntitlementCode } from "./licenseCrypto";
 import { computeSignedEntitlementStatus } from "./licenseLogic";
 import { licenseStore } from "./licenseStore";
 import { getCurrentLicenseStatus } from "./licenseGuard";
-import { LICENSE_RESOURCE_LOCK_NAME, createGeneration, notifyLicenseChanged, notifyLicenseChanging } from "./licenseCrossTabSync";
+import { createGeneration, lockNameForVariant, notifyLicenseChanged, notifyLicenseChanging } from "./licenseCrossTabSync";
 import type { AppLicenseVariant, SignedEntitlementPayload } from "./licenseTypes";
 import { acquireWriteDenyHold, releaseWriteDenyHold, setCachedWriteStatus } from "./writeGuardCache";
 
@@ -13,8 +13,10 @@ import { acquireWriteDenyHold, releaseWriteDenyHold, setCachedWriteStatus } from
  * verifySignedEntitlementCode/computeSignedEntitlementStatus الموجودتين
  * أصلًا في LIC-6A/6B، بلا أي تكرار لمنطقهما.
  *
- * هذه المرحلة لا تحل مشكلة حذف khabir-license-local → تجربة محلية جديدة
- * (LIC-6C وثَّقها كخطر معروف متبقٍّ، يُؤجَّل عمدًا لمرحلة Server Authority).
+ * PHASE LIC-6D-B-3B.3-B3-REAL: بعد فصل التخزين بين teacher/director، كل
+ * عمليات هذا الملف مربوطة بخانة الـvariant المستقلة الخاصة بها فقط
+ * (current:teacher أو current:director) — صفر تأثير على خانة الـvariant
+ * الآخر إطلاقًا في أي مسار هنا.
  */
 
 export type EnrollmentStatus =
@@ -38,37 +40,42 @@ export const ENROLLMENT_MESSAGES: Record<EnrollmentStatus, string> = {
 };
 
 /**
- * PHASE LIC-6C.1-FIX3: قفل تسلسلي (mutex) واحد GLOBAL — لا مقسَّم حسب
- * variant، لأن المورد الحقيقي (سجل IndexedDB الواحد) مشترك بصرف النظر عن
- * الـvariant.
+ * PHASE LIC-6C.1-FIX3 (مُعاد تصميمها في B3-REAL): طابور تسلسلي (mutex)
+ * منفصل **لكل variant** الآن — بعد فصل التخزين، المورد الحقيقي (خانة
+ * IndexedDB) لم يعد مُشترَكًا بين المعلم والمدير، فاستمرار طابور عالمي واحد
+ * كان سيُعطِّل تسلسل أحدهما بصمت أثناء عمل الآخر بلا داعٍ حقيقي — اقتران
+ * غير ضروري مُصحَّح هنا.
  */
-let globalEnrollmentQueue: Promise<unknown> = Promise.resolve();
+const exclusiveQueueByVariant = new Map<AppLicenseVariant, Promise<unknown>>();
 
-const runExclusiveGlobal = <T>(task: () => Promise<T>): Promise<T> => {
-  const next = globalEnrollmentQueue.then(task, task);
-  globalEnrollmentQueue = next.catch(() => undefined);
+const runExclusiveGlobal = <T>(variant: AppLicenseVariant, task: () => Promise<T>): Promise<T> => {
+  const current = exclusiveQueueByVariant.get(variant) ?? Promise.resolve();
+  const next = current.then(task, task);
+  exclusiveQueueByVariant.set(variant, next.catch(() => undefined));
   return next;
 };
 
 /**
- * PHASE LIC-6C.1-FIX4: يلتف حول runExclusiveGlobal بقفل Web Locks API عند
- * توفره — حماية حقيقية عبر التبويبات. عند غياب الدعم: fallback هو طابور
- * الذاكرة المحلي فقط — لا يحمي عبر تبويبات، لا ادّعاء عكس ذلك.
+ * PHASE LIC-6C.1-FIX4 (مُعاد استخدامها، الآن بقفل مُدرِك لـvariant): يلتف
+ * حول runExclusiveGlobal بقفل Web Locks API عند توفره — حماية حقيقية عبر
+ * التبويبات، مستقلة تمامًا بين المعلم والمدير الآن. عند غياب الدعم:
+ * fallback هو طابور الذاكرة المحلي فقط — لا يحمي عبر تبويبات، لا ادّعاء عكس ذلك.
  */
-const runExclusiveResource = <T>(task: () => Promise<T>): Promise<T> => {
+const runExclusiveResource = <T>(variant: AppLicenseVariant, task: () => Promise<T>): Promise<T> => {
   const locks = typeof navigator !== "undefined" ? (navigator as Navigator & { locks?: LockManager }).locks : undefined;
   if (locks) {
-    return locks.request(LICENSE_RESOURCE_LOCK_NAME, () => runExclusiveGlobal(task));
+    return locks.request(lockNameForVariant(variant), () => runExclusiveGlobal(variant, task));
   }
-  return runExclusiveGlobal(task);
+  return runExclusiveGlobal(variant, task);
 };
 
 /**
- * يُقرِّر: هل يُسمَح باستبدال الحالة الحالية (إن وُجدت) بـentitlement الجديد
- * المُتحقَّق منه بالفعل؟ يُطبِّق مصفوفة السياسات A-H المُقفَلة حرفيًا (LIC-6C.1 §8/§9).
+ * يُقرِّر: هل يُسمَح باستبدال الحالة الحالية (إن وُجدت) لهذا الـvariant
+ * بـentitlement الجديد المُتحقَّق منه بالفعل؟ يُطبِّق مصفوفة السياسات A-H
+ * المُقفَلة حرفيًا (LIC-6C.1 §8/§9)، مقارنة فقط مع خانة هذا الـvariant.
  */
-const isReplacementAllowed = async (newPayload: SignedEntitlementPayload): Promise<boolean> => {
-  const existingState = await licenseStore.readCurrentState();
+const isReplacementAllowed = async (newPayload: SignedEntitlementPayload, variant: AppLicenseVariant): Promise<boolean> => {
+  const existingState = await licenseStore.readCurrentState(variant);
 
   if (!existingState) return true; // A
 
@@ -100,7 +107,7 @@ const isReplacementAllowed = async (newPayload: SignedEntitlementPayload): Promi
 };
 
 /**
- * منطقة القرار الحساسة بأكملها — تُنفَّذ دائمًا داخل runExclusiveResource.
+ * منطقة القرار الحساسة بأكملها — تُنفَّذ دائمًا داخل runExclusiveResource(variant).
  *
  * PHASE LIC-6C.1-FIX6 §2: لا حاجة بعد الآن لإعادة ضبط الكاش يدويًا بعد كل
  * await — احتجاز `local:${generation}` (نشط طوال هذه الدالة كلها، يُحرَّر
@@ -127,16 +134,16 @@ const enrollWithinLock = async (signedCode: string, variant: AppLicenseVariant):
   if (freshStatus.kind === "wrong_scope") return fail("wrong_scope");
   if (!freshStatus.writesAllowed) return fail("expired");
 
-  const allowed = await isReplacementAllowed(verification.payload);
+  const allowed = await isReplacementAllowed(verification.payload, variant);
   if (!allowed) return fail("downgrade_rejected");
 
-  const existingRawState = await licenseStore.readCurrentState();
+  const existingRawState = await licenseStore.readCurrentState(variant);
   const priorLastSeenTime = existingRawState && "lastSeenAt" in existingRawState ? new Date(existingRawState.lastSeenAt).getTime() : -Infinity;
   const nowTime = new Date(now).getTime();
   const lastSeenAt = nowTime > priorLastSeenTime ? now : (existingRawState as { lastSeenAt: string }).lastSeenAt;
 
   try {
-    await licenseStore.saveVerifiedSignedEntitlement(normalizedSignedCode, lastSeenAt);
+    await licenseStore.saveVerifiedSignedEntitlement(normalizedSignedCode, lastSeenAt, variant);
   } catch {
     return fail("persistence_error");
   }
@@ -163,16 +170,16 @@ const enrollWithinLock = async (signedCode: string, variant: AppLicenseVariant):
 export const enrollSignedEntitlement = (signedCode: string, variant: AppLicenseVariant): Promise<EnrollmentResult> => {
   setCachedWriteStatus(variant, false);
   const generation = createGeneration();
-  acquireWriteDenyHold(`local:${generation}`);
+  acquireWriteDenyHold(variant, `local:${generation}`);
 
-  const enrollmentPromise = runExclusiveResource(() => enrollWithinLock(signedCode, variant));
+  const enrollmentPromise = runExclusiveResource(variant, () => enrollWithinLock(signedCode, variant));
   // §1: البث يحدث هنا مباشرة — بعد تسجيل طلب القفل أعلاه، بلا await بينهما.
-  notifyLicenseChanging(generation);
+  notifyLicenseChanging(variant, generation);
 
   return enrollmentPromise.finally(() => {
-    releaseWriteDenyHold(`local:${generation}`);
+    releaseWriteDenyHold(variant, `local:${generation}`);
     // §3: إشارة إكمال أفضل جهد دائمًا — بما فيها كل حالات الرفض وأي throw
     // غير متوقَّع؛ finally تضمن هذا بنيويًا.
-    notifyLicenseChanged(generation);
+    notifyLicenseChanged(variant, generation);
   });
 };
