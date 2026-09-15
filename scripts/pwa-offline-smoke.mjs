@@ -104,7 +104,7 @@ try {
     });
 
     const expectedText =
-      "\u062a\u0641\u0639\u064a\u0644 \u0646\u0633\u062e\u0629 \u0627\u0644\u0645\u0639\u0644\u0645";
+      "\u0645\u0631\u062d\u0628\u064b\u0627 \u0628\u0643 \u0641\u064a \u062e\u0628\u064a\u0631 \u0627\u0644\u0634\u0648\u0627\u0647\u062f";
 
     await page
       .getByText(expectedText, { exact: false })

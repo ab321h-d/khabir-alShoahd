@@ -2,12 +2,11 @@ import { useEffect, useRef, useState, createContext, useContext, type ReactNode 
 import {
   lockTeacherSession,
   resolveTeacherAccess,
-  setupTeacher,
+  setupTeacherOnboarding,
   verifyTeacherPin,
   type TeacherAccessState,
 } from "@/lib/teacherAuth";
-import { TEACHER_ACTIVATION_PUBLIC_KEY_JWK } from "@/lib/teacherActivationConfig";
-import { identityStore, type SchoolStage, type UserIdentity } from "@/lib/identityStore";
+import { identityStore, type SchoolStage, type StoredIdentity, type UserIdentity } from "@/lib/identityStore";
 
 /**
  * PHASE ID-3B: مطابقة مقصودة لبنية DirectorAuthGate.tsx (نفس النمط
@@ -37,42 +36,29 @@ const humanActivationError = (error: unknown): string => {
 // ===== شاشة التفعيل (activation-required) =====
 
 function TeacherActivationScreen({ onSuccess }: { onSuccess: () => void }) {
-  const [schoolId, setSchoolId] = useState("");
   const [stage, setStage] = useState<SchoolStage>("elementary");
   const [displayName, setDisplayName] = useState("");
-  const [activationCredential, setActivationCredential] = useState("");
-  const [pin, setPin] = useState("");
-  const [confirmPin, setConfirmPin] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  if (!TEACHER_ACTIVATION_PUBLIC_KEY_JWK) {
-    return (
-      <main dir="rtl" className="director-auth-screen">
-        <section className="director-auth-card">
-          <h1>التفعيل غير مهيأ في هذه النسخة بعد</h1>
-          <p>لا حاجة لإعادة المحاولة الآن — يُرجى مراجعة الجهة المسؤولة عن توزيع نسخة المعلم.</p>
-        </section>
-      </main>
-    );
-  }
-
   const submit = async () => {
     setError("");
-    const trimmedSchoolId = schoolId.trim();
     const trimmedDisplayName = displayName.trim();
-    if (!trimmedSchoolId) return setError("الرجاء إدخال الرقم الوزاري.");
-    if (!trimmedDisplayName) return setError("الرجاء إدخال اسمك.");
-    if (!/^[0-9]{6}$/.test(pin)) return setError("صيغة PIN غير صالحة — يجب أن تتكون من 6 أرقام.");
-    if (pin !== confirmPin) return setError("PIN وتأكيده غير متطابقين.");
-    if (!activationCredential.trim()) return setError("الرجاء إدخال رمز تفعيل المعلم.");
+
+    if (!trimmedDisplayName) {
+      setError("الرجاء إدخال اسمك.");
+      return;
+    }
 
     setSubmitting(true);
     try {
-      await setupTeacher({ activationCredential: activationCredential.trim(), schoolId: trimmedSchoolId, stage, displayName: trimmedDisplayName, pin, confirmPin });
+      await setupTeacherOnboarding({
+        stage,
+        displayName: trimmedDisplayName,
+      });
       onSuccess();
-    } catch (activationError) {
-      setError(humanActivationError(activationError));
+    } catch {
+      setError("تعذر بدء الاستخدام. حاول مرة أخرى.");
     } finally {
       setSubmitting(false);
     }
@@ -80,20 +66,36 @@ function TeacherActivationScreen({ onSuccess }: { onSuccess: () => void }) {
 
   return (
     <main dir="rtl" className="director-auth-screen">
-      <section className="director-auth-card" aria-labelledby="teacher-activation-title">
-        <h1 id="teacher-activation-title">تفعيل نسخة المعلم</h1>
-        <label><span>الرقم الوزاري</span><input type="text" value={schoolId} onChange={(event) => setSchoolId(event.target.value)} autoComplete="off" /></label>
-        <label><span>المرحلة</span>
+      <section className="director-auth-card" aria-labelledby="teacher-onboarding-title">
+        <h1 id="teacher-onboarding-title">مرحبًا بك في خبير الشواهد</h1>
+        <p>ابدأ تجربتك المجانية</p>
+
+        <label>
+          <span>الاسم</span>
+          <input
+            type="text"
+            value={displayName}
+            onChange={(event) => setDisplayName(event.target.value)}
+            autoComplete="name"
+          />
+        </label>
+
+        <label>
+          <span>المرحلة</span>
           <select value={stage} onChange={(event) => setStage(event.target.value as SchoolStage)}>
-            {stageOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            {stageOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
           </select>
         </label>
-        <label><span>الاسم</span><input type="text" value={displayName} onChange={(event) => setDisplayName(event.target.value)} autoComplete="off" /></label>
-        <label><span>رمز تفعيل المعلم</span><input type="text" value={activationCredential} onChange={(event) => setActivationCredential(event.target.value)} autoComplete="off" /></label>
-        <label><span>PIN (6 أرقام)</span><input type="password" inputMode="numeric" maxLength={6} value={pin} onChange={(event) => setPin(event.target.value.replace(/[^0-9]/g, ""))} autoComplete="off" /></label>
-        <label><span>تأكيد PIN</span><input type="password" inputMode="numeric" maxLength={6} value={confirmPin} onChange={(event) => setConfirmPin(event.target.value.replace(/[^0-9]/g, ""))} autoComplete="off" /></label>
+
         {error && <div role="alert" className="director-auth-error">{error}</div>}
-        <button type="button" onClick={() => { void submit(); }} disabled={submitting}>{submitting ? "جارٍ التفعيل…" : "تفعيل"}</button>
+
+        <button type="button" onClick={() => { void submit(); }} disabled={submitting}>
+          {submitting ? "جارٍ البدء…" : "ابدأ الآن"}
+        </button>
       </section>
     </main>
   );
@@ -156,7 +158,7 @@ function TeacherPinScreen({ access, onSuccess }: { access: Extract<TeacherAccess
 
 // ===== PHASE ID-3D.1: هوية المعلم المصادَق عليها كاملة، مُتاحة لـHome.tsx =====
 
-type TeacherIdentityContextValue = { identity: UserIdentity };
+type TeacherIdentityContextValue = { identity: StoredIdentity };
 const TeacherIdentityContext = createContext<TeacherIdentityContextValue | null>(null);
 
 /**
@@ -175,7 +177,7 @@ export const useTeacherIdentity = (): TeacherIdentityContextValue => {
 
 export function TeacherAuthGate({ children }: { children: ReactNode }) {
   const [access, setAccess] = useState<TeacherAccessState>({ status: "loading" });
-  const [identity, setIdentity] = useState<UserIdentity | null>(null);
+  const [identity, setIdentity] = useState<StoredIdentity | null>(null);
   const mountedRef = useRef(true);
   useEffect(() => () => { mountedRef.current = false; }, []);
 

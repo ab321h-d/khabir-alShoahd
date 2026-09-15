@@ -12,13 +12,13 @@ import { TeacherAuthGate, useTeacherIdentity } from "./TeacherAuthGate";
  */
 
 const resolveTeacherAccessMock = vi.fn();
-const setupTeacherMock = vi.fn();
+const setupTeacherOnboardingMock = vi.fn();
 const verifyTeacherPinMock = vi.fn();
 const lockTeacherSessionMock = vi.fn();
 
 vi.mock("@/lib/teacherAuth", () => ({
   resolveTeacherAccess: (...args: unknown[]) => resolveTeacherAccessMock(...args),
-  setupTeacher: (...args: unknown[]) => setupTeacherMock(...args),
+  setupTeacherOnboarding: (...args: unknown[]) => setupTeacherOnboardingMock(...args),
   verifyTeacherPin: (...args: unknown[]) => verifyTeacherPinMock(...args),
   lockTeacherSession: (...args: unknown[]) => lockTeacherSessionMock(...args),
 }));
@@ -26,11 +26,6 @@ vi.mock("@/lib/teacherAuth", () => ({
 const getIdentityByIdMock = vi.fn();
 vi.mock("@/lib/identityStore", () => ({
   identityStore: { getIdentityById: (...args: unknown[]) => getIdentityByIdMock(...args) },
-}));
-
-let mockedPublicKey: object | null = { kty: "EC" };
-vi.mock("@/lib/teacherActivationConfig", () => ({
-  get TEACHER_ACTIVATION_PUBLIC_KEY_JWK() { return mockedPublicKey; },
 }));
 
 
@@ -41,7 +36,6 @@ const sampleSession = { userId: "user-1", role: "teacher" as const, schoolId: "2
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockedPublicKey = { kty: "EC" };
   getIdentityByIdMock.mockResolvedValue(sampleIdentity);
 });
 
@@ -60,7 +54,7 @@ describe("TeacherAuthGate — الرسم والتفاعل", () => {
   it("2) يعرض نموذج التفعيل عند activation-required", async () => {
     resolveTeacherAccessMock.mockResolvedValue({ status: "activation-required" });
     render(<TeacherAuthGate><HomeMarker /></TeacherAuthGate>);
-    await waitFor(() => { screen.getByText("تفعيل نسخة المعلم"); });
+    await waitFor(() => { screen.getByText("مرحبًا بك في خبير الشواهد"); });
     expect(screen.queryByTestId("teacher-home-marker")).toBeNull();
     cleanup();
   });
@@ -78,7 +72,7 @@ describe("TeacherAuthGate — الرسم والتفاعل", () => {
 
     function IdentityConsumer() {
       const { identity } = useTeacherIdentity();
-      return <div data-testid="identity-dump">{identity.userId}|{identity.schoolId}|{identity.stage}|{identity.displayName}</div>;
+      return <div data-testid="identity-dump">{identity.userId}|{"schoolId" in identity ? identity.schoolId : ""}|{identity.stage}|{identity.displayName}</div>;
     }
 
     render(<TeacherAuthGate><IdentityConsumer /></TeacherAuthGate>);
@@ -138,34 +132,40 @@ describe("TeacherAuthGate — الرسم والتفاعل", () => {
     cleanup();
   });
 
-  it("8) مفتاح عام null يفشل بأمان (fail-closed) بدل عرض نموذج فارغ", async () => {
-    mockedPublicKey = null;
+  it("8) الاسم مطلوب قبل بدء onboarding", async () => {
     resolveTeacherAccessMock.mockResolvedValue({ status: "activation-required" });
 
     render(<TeacherAuthGate><HomeMarker /></TeacherAuthGate>);
-    await waitFor(() => { screen.getByText("التفعيل غير مهيأ في هذه النسخة بعد"); });
-    expect(screen.queryByLabelText("رمز تفعيل المعلم")).toBeNull();
+    await waitFor(() => { screen.getByText("مرحبًا بك في خبير الشواهد"); });
+
+    fireEvent.click(screen.getByRole("button", { name: "ابدأ الآن" }));
+
+    expect(screen.getByText("الرجاء إدخال اسمك.")).toBeTruthy();
+    expect(setupTeacherOnboardingMock).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("teacher-home-marker")).toBeNull();
     cleanup();
   });
 
-  it("9) تفعيل ناجح ينتقل إلى authenticated", async () => {
+  it("9) onboarding ناجح ينتقل إلى authenticated", async () => {
     resolveTeacherAccessMock
       .mockResolvedValueOnce({ status: "activation-required" })
       .mockResolvedValueOnce({ status: "authenticated", session: sampleSession });
-    setupTeacherMock.mockResolvedValue(sampleSession);
+    setupTeacherOnboardingMock.mockResolvedValue(sampleSession);
 
     render(<TeacherAuthGate><HomeMarker /></TeacherAuthGate>);
-    await waitFor(() => { screen.getByText("تفعيل نسخة المعلم"); });
+    await waitFor(() => { screen.getByText("مرحبًا بك في خبير الشواهد"); });
 
-    fireEvent.change(screen.getByLabelText("الرقم الوزاري"), { target: { value: "2002" } });
     fireEvent.change(screen.getByLabelText("الاسم"), { target: { value: "أ. نورة" } });
-    fireEvent.change(screen.getByLabelText("رمز تفعيل المعلم"), { target: { value: "VALID_CODE" } });
-    fireEvent.change(screen.getByLabelText("PIN (6 أرقام)"), { target: { value: "246810" } });
-    fireEvent.change(screen.getByLabelText("تأكيد PIN"), { target: { value: "246810" } });
-    fireEvent.click(screen.getByRole("button", { name: "تفعيل" }));
+    fireEvent.change(screen.getByLabelText("المرحلة"), { target: { value: "secondary" } });
+    fireEvent.click(screen.getByRole("button", { name: "ابدأ الآن" }));
 
     await waitFor(() => { screen.getByTestId("teacher-home-marker"); });
-    expect(setupTeacherMock).toHaveBeenCalledWith({ activationCredential: "VALID_CODE", schoolId: "2002", stage: "elementary", displayName: "أ. نورة", pin: "246810", confirmPin: "246810" });
+
+    expect(setupTeacherOnboardingMock).toHaveBeenCalledWith({
+      stage: "secondary",
+      displayName: "أ. نورة",
+    });
     cleanup();
   });
+
 });

@@ -12,18 +12,26 @@
  * هوية رسميًا — لا ضمان تشفيري بلا خادم بأن صاحب الجهاز هو المعلم الحقيقي.
  */
 
-import { identityStore, type SchoolStage, type UserIdentity } from "./identityStore";
+import { identityStore, type SchoolStage, type StoredIdentity, type UserIdentity } from "./identityStore";
 import { derivePinCredential, isValidPinFormat, verifyPinCredential } from "./pinCrypto";
 import { verifyTeacherActivation } from "./teacherActivation";
 
-export type TeacherSession = {
-  userId: string;
-  role: "teacher";
-  schoolId: string;
-  stage: SchoolStage;
-  deviceId: string;
-  authenticatedAt: string;
-};
+export type TeacherSession =
+  | {
+      userId: string;
+      role: "teacher";
+      schoolId: string;
+      stage: SchoolStage;
+      deviceId: string;
+      authenticatedAt: string;
+    }
+  | {
+      userId: string;
+      role: "teacher";
+      stage: SchoolStage;
+      deviceId: string;
+      authenticatedAt: string;
+    };
 
 export type TeacherAccessState =
   | { status: "loading" }
@@ -92,10 +100,10 @@ export const getOrCreateTeacherDeviceId = (): string => {
   return created;
 };
 
-const buildSession = (identity: UserIdentity, deviceId: string): TeacherSession => ({
+const buildSession = (identity: StoredIdentity, deviceId: string): TeacherSession => ({
   userId: identity.userId,
   role: "teacher",
-  schoolId: identity.schoolId,
+  ...("schoolId" in identity ? { schoolId: identity.schoolId } : {}),
   stage: identity.stage,
   deviceId,
   authenticatedAt: new Date().toISOString(),
@@ -123,8 +131,20 @@ export const resolveTeacherAccess = async (): Promise<TeacherAccessState> => {
     return { status: "authenticated", session: buildSession(identity, deviceId) };
   }
 
+  // New onboarding identities have no schoolId and intentionally use no PIN.
+  // Their registered trusted device is sufficient to restore the session.
+  if (!("schoolId" in identity)) {
+    markSessionActive();
+    return { status: "authenticated", session: buildSession(identity, deviceId) };
+  }
+
+  // Legacy school-linked identities retain the existing PIN lock behavior.
   const credential = await getTeacherCredential(identity.userId);
-  const cooldownUntil = credential?.lockUntil && new Date(credential.lockUntil).getTime() > Date.now() ? credential.lockUntil : null;
+  const cooldownUntil =
+    credential?.lockUntil && new Date(credential.lockUntil).getTime() > Date.now()
+      ? credential.lockUntil
+      : null;
+
   return { status: "locked", identity, cooldownUntil };
 };
 
@@ -134,6 +154,19 @@ export const resolveTeacherAccess = async (): Promise<TeacherAccessState> => {
  * الناتج، وليس activationId (معرّف الدعوة نفسها، يُستهلَك مرة واحدة فقط ولا
  * يُستخدَم كهوية دائمة).
  */
+export const setupTeacherOnboarding = async (input: { stage: SchoolStage; displayName: string }): Promise<TeacherSession> => {
+  const identity = await identityStore.createTeacherOnboardingIdentity({
+    stage: input.stage,
+    displayName: input.displayName,
+  });
+
+  const deviceId = getOrCreateTeacherDeviceId();
+  await identityStore.registerTrustedDevice(deviceId, identity.userId);
+  markSessionActive();
+
+  return buildSession(identity, deviceId);
+};
+
 export const setupTeacher = async (input: { activationCredential: string; schoolId: string; stage: SchoolStage; displayName: string; pin: string; confirmPin: string }): Promise<TeacherSession> => {
   const activationResult = await verifyTeacherActivation(input.activationCredential, { schoolId: input.schoolId, stage: input.stage });
   if (!activationResult.ok) throw new Error(`بيانات اعتماد التفعيل غير صالحة: ${activationResult.error}`);

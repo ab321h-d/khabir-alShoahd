@@ -1087,6 +1087,10 @@ export default function Home() {
         incompleteCount: groupedPerformanceAreas.filter((area) => area.status === "incomplete").length,
       },
     };
+    if (!("schoolId" in identity)) {
+      throw new Error("Director package export requires a school-linked teacher identity");
+    }
+
     const identityMetadata = {
       schemaVersion: 1 as const,
       exportId: metadata.exportId,

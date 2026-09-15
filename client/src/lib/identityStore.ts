@@ -29,6 +29,18 @@ export interface UserIdentity {
   status: IdentityStatus;
 }
 
+export interface TeacherOnboardingIdentity {
+  userId: string;
+  role: "teacher";
+  stage: SchoolStage;
+  displayName: string;
+  createdAt: string;
+  updatedAt: string;
+  status: IdentityStatus;
+}
+
+export type StoredIdentity = UserIdentity | TeacherOnboardingIdentity;
+
 const databaseName = "khabir-identity-local";
 const storeName = "identities";
 const credentialsStoreName = "directorCredentials";
@@ -129,6 +141,32 @@ const requestValue = <T,>(request: IDBRequest<T>) => new Promise<T>((resolve, re
 });
 
 export const identityStore = {
+  async createTeacherOnboardingIdentity(input: { stage: SchoolStage; displayName: string }): Promise<TeacherOnboardingIdentity> {
+    const stage = validateStage(input.stage);
+    const displayName = validateDisplayName(input.displayName);
+    const now = new Date().toISOString();
+
+    const identity: TeacherOnboardingIdentity = {
+      userId: generateUserId(),
+      role: "teacher",
+      stage,
+      displayName,
+      createdAt: now,
+      updatedAt: now,
+      status: "active",
+    };
+
+    const database = await openDatabase();
+    await closeWhenDone(
+      database,
+      requestValue(
+        database.transaction(storeName, "readwrite").objectStore(storeName).put(identity),
+      ),
+    );
+
+    return identity;
+  },
+
   async createIdentity(input: { role: IdentityRole; schoolId: string; stage: SchoolStage; displayName: string }): Promise<UserIdentity> {
     const role = validateRole(input.role);
     const schoolId = validateSchoolId(input.schoolId);
@@ -150,10 +188,10 @@ export const identityStore = {
     return identity;
   },
 
-  async getIdentityById(userId: string): Promise<UserIdentity | null> {
+  async getIdentityById(userId: string): Promise<StoredIdentity | null> {
     const database = await openDatabase();
     const result = await closeWhenDone(database, requestValue(database.transaction(storeName, "readonly").objectStore(storeName).get(userId)));
-    return (result as UserIdentity | undefined) || null;
+    return (result as StoredIdentity | undefined) || null;
   },
 
   async getIdentitiesForScope(scope: SchoolScope): Promise<UserIdentity[]> {

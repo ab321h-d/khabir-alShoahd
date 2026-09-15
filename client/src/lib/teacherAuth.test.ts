@@ -27,7 +27,7 @@ vi.mock("./teacherActivation", () => ({
 
 const { identityStore } = await import("./identityStore");
 const { resolveDirectorAccess } = await import("./directorAuth");
-const { setupTeacher, verifyTeacherPin, resolveTeacherAccess, lockTeacherSession, getOrCreateTeacherDeviceId } = await import("./teacherAuth");
+const { setupTeacher, setupTeacherOnboarding, verifyTeacherPin, resolveTeacherAccess, lockTeacherSession, getOrCreateTeacherDeviceId } = await import("./teacherAuth");
 
 const resetAllDatabases = () => Promise.all(
   ["khabir-identity-local", "khabir-teacher-credentials-local", "khabir-director-credentials-local"].map(
@@ -43,6 +43,60 @@ const resetAllDatabases = () => Promise.all(
 beforeEach(async () => {
   await resetAllDatabases();
   localStorage.clear();
+});
+
+
+describe("setupTeacherOnboarding ? المسار الجديد بدون schoolId/PIN", () => {
+  it("ينشئ هوية teacher بالاسم والمرحلة بدون schoolId", async () => {
+    const session = await setupTeacherOnboarding({
+      stage: "secondary",
+      displayName: "أ. نورة",
+    });
+
+    const identity = await identityStore.getIdentityById(session.userId);
+
+    expect(identity).not.toBeNull();
+    expect(identity?.role).toBe("teacher");
+    expect(identity?.stage).toBe("secondary");
+    expect(identity?.displayName).toBe("أ. نورة");
+    expect(identity && "schoolId" in identity).toBe(false);
+    expect("schoolId" in session).toBe(false);
+  });
+
+  it("يسجل الجهاز ويعيد authenticated مباشرة", async () => {
+    const session = await setupTeacherOnboarding({
+      stage: "middle",
+      displayName: "معلم",
+    });
+
+    expect(session.deviceId).toBe(getOrCreateTeacherDeviceId());
+
+    const access = await resolveTeacherAccess();
+    expect(access.status).toBe("authenticated");
+
+    if (access.status === "authenticated") {
+      expect(access.session.userId).toBe(session.userId);
+      expect(access.session.deviceId).toBe(session.deviceId);
+    }
+  });
+
+  it("بعد lock تعود هوية onboarding على الجهاز الموثوق بدون PIN", async () => {
+    const session = await setupTeacherOnboarding({
+      stage: "elementary",
+      displayName: "معلم",
+    });
+
+    lockTeacherSession();
+
+    const access = await resolveTeacherAccess();
+
+    expect(access.status).toBe("authenticated");
+
+    if (access.status === "authenticated") {
+      expect(access.session.userId).toBe(session.userId);
+      expect("schoolId" in access.session).toBe(false);
+    }
+  });
 });
 
 describe("setupTeacher — الإعداد الأول بعد تفعيل صالح", () => {
