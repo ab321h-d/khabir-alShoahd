@@ -19,7 +19,7 @@ const SALT_LENGTH_BYTES = 16;
 /** PIN صالح = 6 أرقام لاتينية (0-9) بالضبط، بلا مسافات. لا تطبيع للأرقام العربية-الهندية — تُرفض كصيغة غير صالحة. */
 export const isValidPinFormat = (pin: string): boolean => /^[0-9]{6}$/.test(pin);
 
-const bytesToBase64 = (bytes: Uint8Array): string => btoa(String.fromCharCode(...bytes));
+const bytesToBase64 = (bytes: Uint8Array): string => btoa(String.fromCharCode(...Array.from(bytes)));
 const base64ToBytes = (base64: string): Uint8Array => Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
 
 const derivePinBits = async (pin: string, salt: Uint8Array, iterations: number): Promise<Uint8Array> => {
