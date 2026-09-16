@@ -16,6 +16,23 @@ class MemoryStorage {
 }
 (globalThis as unknown as { window: { localStorage: MemoryStorage } }).window = { localStorage: new MemoryStorage() };
 (globalThis as unknown as { localStorage: MemoryStorage }).localStorage = (globalThis as unknown as { window: { localStorage: MemoryStorage } }).window.localStorage;
+const requestTeacherTrialEnrollmentMock = vi.fn(async () => ({
+  accountId: "server-account-001",
+  signedCode: "SIGNED_TEST_ENTITLEMENT",
+}));
+
+const enrollSignedEntitlementMock = vi.fn(async () => ({
+  status: "success" as const,
+}));
+
+vi.mock("./teacherTrialApi", () => ({
+  requestTeacherTrialEnrollment: requestTeacherTrialEnrollmentMock,
+}));
+
+vi.mock("./license/licenseEnrollment", () => ({
+  enrollSignedEntitlement: enrollSignedEntitlementMock,
+}));
+
 vi.mock("./teacherActivation", () => ({
   verifyTeacherActivation: vi.fn(async (code: string) => {
     if (code === "VALID_TEST_ACTIVATION_CODE") {
@@ -97,6 +114,50 @@ describe("setupTeacherOnboarding ? المسار الجديد بدون schoolId/P
       expect("schoolId" in access.session).toBe(false);
     }
   });
+  it("does not create local identity when server enrollment fails", async () => {
+    requestTeacherTrialEnrollmentMock.mockRejectedValueOnce(new Error("network_error"));
+    const createIdentitySpy = vi.spyOn(identityStore, "createTeacherOnboardingIdentity");
+    const deviceId = getOrCreateTeacherDeviceId();
+
+    await expect(setupTeacherOnboarding({
+      stage: "secondary",
+      displayName: "Teacher",
+    })).rejects.toThrow("network_error");
+
+    expect(createIdentitySpy).not.toHaveBeenCalled();
+    expect(await identityStore.getTrustedDevice(deviceId)).toBeNull();
+    createIdentitySpy.mockRestore();
+  });
+
+  it("does not create local identity when signed entitlement is rejected", async () => {
+    enrollSignedEntitlementMock.mockResolvedValueOnce({ status: "invalid" });
+    const createIdentitySpy = vi.spyOn(identityStore, "createTeacherOnboardingIdentity");
+    const deviceId = getOrCreateTeacherDeviceId();
+
+    await expect(setupTeacherOnboarding({
+      stage: "secondary",
+      displayName: "Teacher",
+    })).rejects.toThrow("teacher_trial_entitlement_invalid");
+
+    expect(createIdentitySpy).not.toHaveBeenCalled();
+    expect(await identityStore.getTrustedDevice(deviceId)).toBeNull();
+    createIdentitySpy.mockRestore();
+  });
+
+  it("keeps server accountId separate from local userId", async () => {
+    const session = await setupTeacherOnboarding({
+      stage: "secondary",
+      displayName: "Teacher",
+    });
+
+    expect(requestTeacherTrialEnrollmentMock).toHaveBeenCalledWith(session.deviceId);
+    expect(enrollSignedEntitlementMock).toHaveBeenCalledWith(
+      "SIGNED_TEST_ENTITLEMENT",
+      "teacher",
+    );
+    expect(session.userId).not.toBe("server-account-001");
+  });
+
 });
 
 describe("setupTeacher — الإعداد الأول بعد تفعيل صالح", () => {

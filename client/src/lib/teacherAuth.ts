@@ -15,6 +15,8 @@
 import { identityStore, type SchoolStage, type StoredIdentity, type UserIdentity } from "./identityStore";
 import { derivePinCredential, isValidPinFormat, verifyPinCredential } from "./pinCrypto";
 import { verifyTeacherActivation } from "./teacherActivation";
+import { requestTeacherTrialEnrollment } from "./teacherTrialApi";
+import { enrollSignedEntitlement } from "./license/licenseEnrollment";
 
 export type TeacherSession =
   | {
@@ -95,7 +97,7 @@ const COOLDOWN_MS = 30_000;
 export const getOrCreateTeacherDeviceId = (): string => {
   const existing = window.localStorage.getItem(DEVICE_ID_STORAGE_KEY);
   if (existing) return existing;
-  const created = crypto.randomUUID?.() || `device-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const created = crypto.randomUUID();
   window.localStorage.setItem(DEVICE_ID_STORAGE_KEY, created);
   return created;
 };
@@ -155,17 +157,25 @@ export const resolveTeacherAccess = async (): Promise<TeacherAccessState> => {
  * يُستخدَم كهوية دائمة).
  */
 export const setupTeacherOnboarding = async (input: { stage: SchoolStage; displayName: string }): Promise<TeacherSession> => {
+  const deviceId = getOrCreateTeacherDeviceId();
+
+  const { signedCode } = await requestTeacherTrialEnrollment(deviceId);
+  const enrollment = await enrollSignedEntitlement(signedCode, "teacher");
+
+  if (enrollment.status !== "success") {
+    throw new Error(`teacher_trial_entitlement_${enrollment.status}`);
+  }
+
   const identity = await identityStore.createTeacherOnboardingIdentity({
     stage: input.stage,
     displayName: input.displayName,
   });
 
-  const deviceId = getOrCreateTeacherDeviceId();
   await identityStore.registerTrustedDevice(deviceId, identity.userId);
   markSessionActive();
 
   return buildSession(identity, deviceId);
-};
+}
 
 export const setupTeacher = async (input: { activationCredential: string; schoolId: string; stage: SchoolStage; displayName: string; pin: string; confirmPin: string }): Promise<TeacherSession> => {
   const activationResult = await verifyTeacherActivation(input.activationCredential, { schoolId: input.schoolId, stage: input.stage });
