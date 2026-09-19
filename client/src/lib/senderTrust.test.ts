@@ -91,14 +91,14 @@ describe("PILOT-50-F1: directorTrustRegistry connection/behavior fixes", () => {
 describe("PILOT-50-F TRUST", () => {
   it("أول مُرسِل صالح غير معروف -> new_sender", async () => {
     const { manifest, signature } = await buildValidPackage();
-    const result = await resolveSenderTrust({ manifestRaw: manifest, signature, pdfBytes, completenessJsonBytes });
+    const result = await resolveSenderTrust({ manifestRaw: manifest, signature, pdfBytes, completenessJsonBytes, authorization: { kind: "trial" } });
     expect(result.status).toBe("new_sender");
   });
 
   it("اعتماد صريح ثم إرسال لاحق بنفس المفتاح -> trusted", async () => {
     const { manifest, signature } = await buildValidPackage();
     await directorTrustRegistry.approveSender({ fingerprint: manifest.senderFingerprint, publicKeyJwk: manifest.senderPublicKeyJwk, approvedDisplayName: manifest.displayName, approvedStage: manifest.stage });
-    const result = await resolveSenderTrust({ manifestRaw: manifest, signature, pdfBytes, completenessJsonBytes });
+    const result = await resolveSenderTrust({ manifestRaw: manifest, signature, pdfBytes, completenessJsonBytes, authorization: { kind: "trial" } });
     expect(result.status).toBe("trusted");
   });
 
@@ -107,7 +107,7 @@ describe("PILOT-50-F TRUST", () => {
     await directorTrustRegistry.approveSender({ fingerprint: first.manifest.senderFingerprint, publicKeyJwk: first.manifest.senderPublicKeyJwk, approvedDisplayName: first.manifest.displayName, approvedStage: first.manifest.stage });
 
     const second = await buildValidPackage({ displayName: "أ. نورة" }); // نفس الاسم، مفتاح جديد تمامًا
-    const result = await resolveSenderTrust({ manifestRaw: second.manifest, signature: second.signature, pdfBytes, completenessJsonBytes });
+    const result = await resolveSenderTrust({ manifestRaw: second.manifest, signature: second.signature, pdfBytes, completenessJsonBytes, authorization: { kind: "trial" } });
     expect(result.status).toBe("name_conflict_different_sender");
   });
 
@@ -115,7 +115,7 @@ describe("PILOT-50-F TRUST", () => {
     const first = await buildValidPackage({ displayName: "أ. نورة" });
     await directorTrustRegistry.approveSender({ fingerprint: first.manifest.senderFingerprint, publicKeyJwk: first.manifest.senderPublicKeyJwk, approvedDisplayName: first.manifest.displayName, approvedStage: first.manifest.stage });
     const second = await buildValidPackage({ displayName: "أ. نورة" });
-    await resolveSenderTrust({ manifestRaw: second.manifest, signature: second.signature, pdfBytes, completenessJsonBytes }); // صفر اعتماد صريح هنا
+    await resolveSenderTrust({ manifestRaw: second.manifest, signature: second.signature, pdfBytes, completenessJsonBytes, authorization: { kind: "trial" } }); // صفر اعتماد صريح هنا
 
     const stillTrusted = await directorTrustRegistry.getByFingerprint(first.manifest.senderFingerprint);
     expect(stillTrusted).not.toBeNull();
@@ -145,7 +145,7 @@ describe("PILOT-50-F REPLAY", () => {
   it("حالة إعادة الإرسال مستقلة تمامًا عن صحة التوقيع التشفيرية", async () => {
     const { manifest, signature } = await buildValidPackage({ exportId: "exp-replay-test" });
     await directorTrustRegistry.markExportIdSeen(manifest.exportId);
-    const result = await resolveSenderTrust({ manifestRaw: manifest, signature, pdfBytes, completenessJsonBytes });
+    const result = await resolveSenderTrust({ manifestRaw: manifest, signature, pdfBytes, completenessJsonBytes, authorization: { kind: "trial" } });
     expect(result.status).toBe("new_sender"); // التوقيع لا يزال صحيحًا فعليًا، إعادة الإرسال إعلامية فقط منفصلة
   });
 });

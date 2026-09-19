@@ -62,7 +62,7 @@ describe("PILOT-50-F2: معلم onboarding جديد بلا schoolId يستطيع
       pdfBytes, completenessJsonBytes,
     });
 
-    const result = await resolveSenderTrust({ manifestRaw: manifest, signature, pdfBytes, completenessJsonBytes });
+    const result = await resolveSenderTrust({ manifestRaw: manifest, signature, pdfBytes, completenessJsonBytes, authorization: { kind: "trial" } });
     expect(result.status).toBe("new_sender"); // قبول تشفيري كامل، بصرف النظر التام عن غياب schoolId
   });
 
@@ -74,10 +74,10 @@ describe("PILOT-50-F2: معلم onboarding جديد بلا schoolId يستطيع
       pdfBytes, completenessJsonBytes,
     });
 
-    const withInvalidSignature = await resolveSenderTrust({ manifestRaw: manifest, signature: "not-a-valid-signature", pdfBytes, completenessJsonBytes });
+    const withInvalidSignature = await resolveSenderTrust({ manifestRaw: manifest, signature: "not-a-valid-signature", pdfBytes, completenessJsonBytes, authorization: { kind: "trial" } });
     expect(withInvalidSignature.status).toBe("cryptographic_verification_failed");
 
-    const withMissingSignature = await resolveSenderTrust({ manifestRaw: manifest, signature: "", pdfBytes, completenessJsonBytes });
+    const withMissingSignature = await resolveSenderTrust({ manifestRaw: manifest, signature: "", pdfBytes, completenessJsonBytes, authorization: { kind: "trial" } });
     expect(withMissingSignature.status).toBe("cryptographic_verification_failed");
   });
 

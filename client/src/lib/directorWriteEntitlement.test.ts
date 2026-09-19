@@ -112,7 +112,7 @@ describe("PILOT-50-F3.1+F3.2: ترتيب معاملات exportId الصحيح ع
 
   it("C) فشل الحفظ لا يُعلِّم exportId كمُشاهَد، ولا يُنشئ سجلًا في directorStore", async () => {
     const { manifest, signature, pdfBytes, completenessJsonBytes } = await buildValidPackage("exp-c1");
-    const trustResult = await resolveSenderTrust({ manifestRaw: manifest, signature, pdfBytes, completenessJsonBytes });
+    const trustResult = await resolveSenderTrust({ manifestRaw: manifest, signature, pdfBytes, completenessJsonBytes, authorization: { kind: "trial" } });
     expect(trustResult.status).toBe("new_sender");
 
     const outcome = await performTrustedImportSave({
@@ -127,7 +127,7 @@ describe("PILOT-50-F3.1+F3.2: ترتيب معاملات exportId الصحيح ع
 
   it("D) بعد فشل، نفس exportId يبقى قابلًا للمعالجة من جديد (directorStore لم تكتب شيئًا فعليًا)", async () => {
     const { manifest, signature, pdfBytes, completenessJsonBytes } = await buildValidPackage("exp-d1");
-    const trustResult = await resolveSenderTrust({ manifestRaw: manifest, signature, pdfBytes, completenessJsonBytes });
+    const trustResult = await resolveSenderTrust({ manifestRaw: manifest, signature, pdfBytes, completenessJsonBytes, authorization: { kind: "trial" } });
     if (trustResult.status !== "new_sender") throw new Error("unreachable");
 
     const fakeStore = makeFakeDirectorStore();
@@ -150,7 +150,7 @@ describe("PILOT-50-F3.1+F3.2: ترتيب معاملات exportId الصحيح ع
 
   it("E) بعد نجاح حفظ فعلي كامل، exportId يُصبح مُشاهَدًا في سجل الثقة (best-effort)", async () => {
     const { manifest, signature, pdfBytes, completenessJsonBytes } = await buildValidPackage("exp-e1");
-    const trustResult = await resolveSenderTrust({ manifestRaw: manifest, signature, pdfBytes, completenessJsonBytes });
+    const trustResult = await resolveSenderTrust({ manifestRaw: manifest, signature, pdfBytes, completenessJsonBytes, authorization: { kind: "trial" } });
     if (trustResult.status !== "new_sender") throw new Error("unreachable");
     await directorTrustRegistry.approveSender({
       fingerprint: trustResult.manifest.senderFingerprint, publicKeyJwk: trustResult.manifest.senderPublicKeyJwk,
@@ -170,7 +170,7 @@ describe("PILOT-50-F3.1+F3.2: ترتيب معاملات exportId الصحيح ع
 
   it("F) [الإثبات الجوهري] بعد نجاح استيراد كامل عبر directorStore الحقيقية (مُحاكاة)، إعادة إرسال نفس exportId -> save لا تُستدعى إطلاقًا", async () => {
     const { manifest, signature, pdfBytes, completenessJsonBytes } = await buildValidPackage("exp-f1");
-    const trustResult = await resolveSenderTrust({ manifestRaw: manifest, signature, pdfBytes, completenessJsonBytes });
+    const trustResult = await resolveSenderTrust({ manifestRaw: manifest, signature, pdfBytes, completenessJsonBytes, authorization: { kind: "trial" } });
     if (trustResult.status !== "new_sender") throw new Error("unreachable");
 
     const fakeStore = makeFakeDirectorStore();
@@ -197,7 +197,7 @@ describe("PILOT-50-F3.1+F3.2: ترتيب معاملات exportId الصحيح ع
 
   it("F3.2) save تنجح لكن markExportIdSeen تفشل -> إعادة المحاولة لا تُنشئ سجلًا ثانيًا (directorStore هي المصدر الموثوق، لا سجل الثقة)", async () => {
     const { manifest, signature, pdfBytes, completenessJsonBytes } = await buildValidPackage("exp-f32-1");
-    const trustResult = await resolveSenderTrust({ manifestRaw: manifest, signature, pdfBytes, completenessJsonBytes });
+    const trustResult = await resolveSenderTrust({ manifestRaw: manifest, signature, pdfBytes, completenessJsonBytes, authorization: { kind: "trial" } });
     if (trustResult.status !== "new_sender") throw new Error("unreachable");
 
     const fakeStore = makeFakeDirectorStore();
@@ -229,7 +229,7 @@ describe("PILOT-50-F3-FIX (G/H/I): سلوك الثقة الصريح والفشل
     const pdfBytes = new TextEncoder().encode("pdf-g");
     const completenessJsonBytes = new TextEncoder().encode(JSON.stringify({ exportId: "exp-g1" }));
     const { manifest, signature } = await buildSignedManifestForExport({ exportId: "exp-g1", generatedAt: new Date().toISOString(), displayName: "معلم جي", stage: "middle", pdfBytes, completenessJsonBytes });
-    const result = await resolveSenderTrust({ manifestRaw: manifest, signature, pdfBytes, completenessJsonBytes });
+    const result = await resolveSenderTrust({ manifestRaw: manifest, signature, pdfBytes, completenessJsonBytes, authorization: { kind: "trial" } });
     expect(result.status).toBe("new_sender");
     expect(await directorTrustRegistry.getByFingerprint(manifest.senderFingerprint)).toBeNull();
   });
@@ -244,7 +244,7 @@ describe("PILOT-50-F3-FIX (G/H/I): سلوك الثقة الصريح والفشل
     const secondPdfBytes = new TextEncoder().encode("pdf-h2");
     const secondCompletenessBytes = new TextEncoder().encode(JSON.stringify({ exportId: "exp-h2" }));
     const second = await buildSignedManifestForExport({ exportId: "exp-h2", generatedAt: new Date().toISOString(), displayName: "نفس الاسم", stage: "middle", pdfBytes: secondPdfBytes, completenessJsonBytes: secondCompletenessBytes });
-    const result = await resolveSenderTrust({ manifestRaw: second.manifest, signature: second.signature, pdfBytes: secondPdfBytes, completenessJsonBytes: secondCompletenessBytes });
+    const result = await resolveSenderTrust({ manifestRaw: second.manifest, signature: second.signature, pdfBytes: secondPdfBytes, completenessJsonBytes: secondCompletenessBytes, authorization: { kind: "trial" } });
     expect(result.status).toBe("name_conflict_different_sender");
   });
 
@@ -252,7 +252,7 @@ describe("PILOT-50-F3-FIX (G/H/I): سلوك الثقة الصريح والفشل
     const pdfBytes = new TextEncoder().encode("pdf-i");
     const completenessJsonBytes = new TextEncoder().encode(JSON.stringify({ exportId: "exp-i1" }));
     const { manifest, signature } = await buildSignedManifestForExport({ exportId: "exp-i1", generatedAt: new Date().toISOString(), displayName: "معلم", stage: "middle", pdfBytes, completenessJsonBytes });
-    const tamperedResult = await resolveSenderTrust({ manifestRaw: { ...manifest, displayName: "منتحل" }, signature, pdfBytes, completenessJsonBytes });
+    const tamperedResult = await resolveSenderTrust({ manifestRaw: { ...manifest, displayName: "منتحل" }, signature, pdfBytes, completenessJsonBytes, authorization: { kind: "trial" } });
     expect(tamperedResult.status).toBe("cryptographic_verification_failed");
   });
 });

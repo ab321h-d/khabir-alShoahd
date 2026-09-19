@@ -92,24 +92,44 @@ export const resolveStableTeacherIdentity = (
 
 export type SenderTrustResolution =
   | { status: "cryptographic_verification_failed"; reason: string }
+  | { status: "stage_not_authorized"; manifest: SignedManifestV1 }
   | { status: "new_sender"; manifest: SignedManifestV1 }
   | { status: "trusted"; manifest: SignedManifestV1 }
   | { status: "name_conflict_different_sender"; manifest: SignedManifestV1; existingApprovedStage: string }
   | { status: "legacy_unverified" };
 
 /**
+ * PHASE PILOT-50-G: سياق التفويض — **إلزامي**، لا قيمة افتراضية ولا معامل
+ * اختياري يسمح بـfail-open. مُستمَد حصرًا من DirectorAuthorizationRecord
+ * الفعلية المُخزَّنة (عبر session.schools في Director.tsx) — صفر إمكانية
+ * لأي طرف (Director.tsx نفسها، أو أي مستدعٍ مستقبلي) لتمرير "مراحل
+ * مُخوَّلة" مُختلَقة كسلطة بديلة. trial: صفر قيد (تجربة منتج غير رسمية
+ * أصلًا). activated: يحمل authorizedStages المُشتقَّة تشفيريًا من اعتماد
+ * تفعيل المدير الموقَّع نفسه.
+ */
+export type SenderAuthorizationContext =
+  | { kind: "trial" }
+  | { kind: "activated"; authorizedStages: readonly string[] };
+
+/**
  * التحقق الكامل fail-closed (PHASE PILOT-50-E3/§7 A-D) + قرار الثقة
- * (§9/§10/§12). **الاسم وحده لا يمنح ثقة تحت أي ظرف** — fingerprint هو
- * مفتاح الهوية الوحيد. يُستدعى من Director.tsx بعد فك ZIP، بتمرير
- * البايتات الخام الفعلية لكل من portfolio.pdf وcompleteness.json (لا
- * القيم المُحلَّلة/المُعاد تسلسلها — PHASE PILOT-50-F/§4: "Do NOT hash
- * parsed/re-serialized completeness data").
+ * (§9/§10/§12) + PHASE PILOT-50-G: فرض stage authorization لمدير
+ * activated **قبل** أي approval/trust mutation/save — منطق domain، لا
+ * فحص UI فقط. **school-level enforcement غير مُطبَّق عمدًا**: الـmanifest
+ * لا يحمل schoolId موثوقًا تشفيريًا إطلاقًا (خارج نطاق G تمامًا، يتطلب
+ * تغيير SignedManifestV1 schema في مرحلة منفصلة). **الاسم وحده لا يمنح
+ * ثقة تحت أي ظرف** — fingerprint هو مفتاح الهوية الوحيد. يُستدعى من
+ * Director.tsx بعد فك ZIP، بتمرير البايتات الخام الفعلية لكل من
+ * portfolio.pdf وcompleteness.json (لا القيم المُحلَّلة/المُعاد
+ * تسلسلها — PHASE PILOT-50-F/§4: "Do NOT hash parsed/re-serialized
+ * completeness data").
  */
 export const resolveSenderTrust = async (input: {
   manifestRaw: unknown;
   signature: string;
   pdfBytes: Uint8Array;
   completenessJsonBytes: Uint8Array;
+  authorization: SenderAuthorizationContext;
 }): Promise<SenderTrustResolution> => {
   if (!isValidSignedManifestV1Shape(input.manifestRaw)) {
     return { status: "cryptographic_verification_failed", reason: "malformed_manifest_shape" };
@@ -134,7 +154,14 @@ export const resolveSenderTrust = async (input: {
     return { status: "cryptographic_verification_failed", reason: "completeness_json_hash_mismatch" };
   }
 
-  // كل الفحوصات التشفيرية نجحت — الآن فقط قرار الثقة (منفصل تمامًا عن صحة التوقيع)
+  // PHASE PILOT-50-G: فرض stage authorization — **قبل** أي approval/trust
+  // mutation/save (getByFingerprint/touchLastSeen أدناه هي أول مسار
+  // mutation محتمل، فيجب أن يسبقها هذا الفحص مباشرة). trial: صفر قيد.
+  if (input.authorization.kind === "activated" && !input.authorization.authorizedStages.includes(manifest.stage)) {
+    return { status: "stage_not_authorized", manifest };
+  }
+
+  // كل الفحوصات التشفيرية والتفويضية نجحت — الآن فقط قرار الثقة (منفصل تمامًا عن صحة التوقيع)
   const existingByFingerprint = await directorTrustRegistry.getByFingerprint(manifest.senderFingerprint);
   if (existingByFingerprint) {
     await directorTrustRegistry.touchLastSeen(manifest.senderFingerprint);

@@ -285,8 +285,18 @@ export default function Director() {
             signature,
             pdfBytes,
             completenessJsonBytes: metadataBytes,
+            // PHASE PILOT-50-G: سياق التفويض الحقيقي من session المُخزَّنة
+            // فعليًا — صفر إمكانية لـDirector.tsx إنشاء/استبدال سلطة، فقط
+            // تمرير ما هو مُخوَّل بالفعل من DirectorAuthorizationRecord.
+            authorization: session.authorizationKind === "activated"
+              ? { kind: "activated", authorizedStages: session.schools.map((school) => school.stage) }
+              : { kind: "trial" },
           });
 
+          if (trustResult.status === "stage_not_authorized") {
+            showToast(`هذه الحزمة تخص مرحلة (${trustResult.manifest.stage}) غير مُصرَّح بها لحساب المدير هذا — لن تُستورَد`);
+            return;
+          }
           if (trustResult.status === "cryptographic_verification_failed") {
             showToast(`تعذر التحقق من هوية المُرسِل تشفيريًا (${trustResult.reason}) — سيُستورَد الملف بلا هوية موثوقة`);
           } else if (trustResult.status === "new_sender") {
