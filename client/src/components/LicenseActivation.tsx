@@ -103,6 +103,15 @@ function LicenseActivationForm() {
  */
 export function LicenseActivation() {
   const { status } = useLicenseStatus();
+
+  // PHASE PILOT-CLEANUP-1-FIX: status.kind==="missing" لا يملك ترجمة في
+  // statusLabel (القاموس من مرحلة ترخيص قديمة سابقة لنظام onboarding/trial
+  // الحالي) — كان fallback يعرض النص الإنجليزي الخام "missing" حرفيًا.
+  // صفر عرض هنا عمدًا (لا شارة، لا نص بديل) — كل حالة أخرى تبقى بلا تغيير.
+  if (status?.kind === "missing") {
+    return null;
+  }
+
   const label = status ? statusLabel[status.kind] || status.kind : "الترخيص";
 
   return (
