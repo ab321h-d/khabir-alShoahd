@@ -2,13 +2,13 @@ import { createContext, useContext, useEffect, useRef, useState, type ReactNode 
 import {
   lockDirectorSession,
   resolveDirectorAccess,
-  setupDirector,
   verifyDirectorPin,
+  startDirectorTrial,
+  completeDirectorActivation,
   type DirectorAccessState,
   type DirectorSession,
 } from "@/lib/directorAuth";
-import { DIRECTOR_ACTIVATION_PUBLIC_KEY_JWK } from "@/lib/directorActivationConfig";
-import type { SchoolStage } from "@/lib/identityStore";
+import type { AuthorizedSchool, SchoolStage } from "@/lib/identityStore";
 
 const stageOptions: Array<{ value: SchoolStage; label: string }> = [
   { value: "elementary", label: "ابتدائي" },
@@ -16,98 +16,77 @@ const stageOptions: Array<{ value: SchoolStage; label: string }> = [
   { value: "secondary", label: "ثانوي" },
 ];
 
-/** رسالة موجَّهة للمستخدم فقط — لا تفاصيل تقنية، لا crypto، لا stack traces. */
-const humanActivationError = (error: unknown): string => {
-  const message = error instanceof Error ? error.message : "";
-  if (message.includes("no_public_key")) return "التفعيل غير مهيأ في هذه النسخة بعد.";
-  if (message.includes("expired")) return "رمز التفعيل منتهي.";
-  if (message.includes("scope_mismatch")) return "بيانات المدرسة/المرحلة لا تطابق رمز التفعيل.";
-  if (message.includes("already_consumed")) return "رمز التفعيل استُخدم من قبل على هذا الجهاز.";
-  if (message.includes("PIN وتأكيده")) return "PIN وتأكيده غير متطابقين.";
-  if (message.includes("صيغة PIN")) return "صيغة PIN غير صالحة — يجب أن تتكون من 6 أرقام.";
-  return "رمز التفعيل غير صالح.";
-};
+// ===== Context: يوفر الجلسة + إجراء القفل + طلب التفعيل لأي مكوّن داخلي =====
 
-// ===== Context: يوفر الجلسة الحالية + إجراء القفل لأي مكوّن داخل مساحة المدير المصادَق عليها =====
-
-type DirectorAuthContextValue = { session: DirectorSession; lock: () => void };
+type DirectorAuthContextValue = { session: DirectorSession; lock: () => void; requestActivation: () => void };
 const DirectorAuthContext = createContext<DirectorAuthContextValue | null>(null);
 
-/** يُستخدَم داخل أي مكوّن ضمن مساحة المدير بعد المصادقة (مثل زر "قفل الحساب" في Director.tsx). */
 export const useDirectorAuth = (): DirectorAuthContextValue => {
   const value = useContext(DirectorAuthContext);
   if (!value) throw new Error("useDirectorAuth يجب أن يُستخدَم داخل DirectorAuthGate بعد المصادقة");
   return value;
 };
 
-// ===== شاشة التفعيل (activation-required) =====
+// ===== PHASE PILOT-50-F3.4 — الشاشة الأولى: بدء التجربة (رقم وزاري فقط) =====
 
-function DirectorActivationScreen({ onSuccess }: { onSuccess: () => void }) {
+function DirectorTrialStartScreen({ onSuccess }: { onSuccess: () => void }) {
   const [schoolId, setSchoolId] = useState("");
-  const [stage, setStage] = useState<SchoolStage>("elementary");
-  const [displayName, setDisplayName] = useState("");
-  const [activationCredential, setActivationCredential] = useState("");
+  const [step, setStep] = useState<"school" | "pin">("school");
   const [pin, setPin] = useState("");
   const [confirmPin, setConfirmPin] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  if (!DIRECTOR_ACTIVATION_PUBLIC_KEY_JWK) {
-    return (
-      <main dir="rtl" className="director-auth-screen">
-        <section className="director-auth-card">
-          <h1>التفعيل غير مهيأ في هذه النسخة بعد</h1>
-          <p>لا حاجة لإعادة المحاولة الآن — يُرجى مراجعة الجهة المسؤولة عن توزيع نسخة المدير.</p>
-        </section>
-      </main>
-    );
-  }
-
-  const submit = async () => {
+  const submitSchool = () => {
     setError("");
-    const trimmedSchoolId = schoolId.trim();
-    const trimmedDisplayName = displayName.trim();
-    if (!trimmedSchoolId) return setError("الرجاء إدخال الرقم الوزاري.");
-    if (!trimmedDisplayName) return setError("الرجاء إدخال اسم المدير.");
-    if (!/^[0-9]{6}$/.test(pin)) return setError("صيغة PIN غير صالحة — يجب أن تتكون من 6 أرقام.");
-    if (pin !== confirmPin) return setError("PIN وتأكيده غير متطابقين.");
-    if (!activationCredential.trim()) return setError("الرجاء إدخال رمز تفعيل المدير.");
+    if (!schoolId.trim()) { setError("الرجاء إدخال الرقم الوزاري."); return; }
+    setStep("pin");
+  };
 
+  const submitPin = async () => {
+    setError("");
+    if (!/^[0-9]{6}$/.test(pin)) { setError("صيغة الرمز غير صالحة — يجب أن يتكون من 6 أرقام."); return; }
+    if (pin !== confirmPin) { setError("الرمزان غير متطابقين."); return; }
     setSubmitting(true);
     try {
-      await setupDirector({ activationCredential: activationCredential.trim(), schoolId: trimmedSchoolId, stage, displayName: trimmedDisplayName, pin, confirmPin });
+      await startDirectorTrial({ schoolId: schoolId.trim(), pin, confirmPin });
       onSuccess();
-    } catch (activationError) {
-      setError(humanActivationError(activationError));
+    } catch {
+      setError("تعذر بدء التجربة. حاول مرة أخرى.");
     } finally {
       setSubmitting(false);
     }
   };
 
+  if (step === "school") {
+    return (
+      <main dir="rtl" className="director-auth-screen">
+        <section className="director-auth-card" aria-labelledby="director-trial-title">
+          <h1 id="director-trial-title">تجربة خبير المدير</h1>
+          <label><span>الرقم الوزاري</span><input type="text" inputMode="numeric" value={schoolId} onChange={(event) => setSchoolId(event.target.value)} autoComplete="off" autoFocus onKeyDown={(event) => { if (event.key === "Enter") submitSchool(); }} /></label>
+          {error && <div role="alert" className="director-auth-error">{error}</div>}
+          <button type="button" onClick={submitSchool} disabled={!schoolId.trim()}>بدء التجربة</button>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main dir="rtl" className="director-auth-screen">
-      <section className="director-auth-card" aria-labelledby="director-activation-title">
-        <h1 id="director-activation-title">تفعيل نسخة المدير</h1>
-        <label><span>الرقم الوزاري</span><input type="text" value={schoolId} onChange={(event) => setSchoolId(event.target.value)} autoComplete="off" /></label>
-        <label><span>المرحلة</span>
-          <select value={stage} onChange={(event) => setStage(event.target.value as SchoolStage)}>
-            {stageOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-          </select>
-        </label>
-        <label><span>اسم المدير</span><input type="text" value={displayName} onChange={(event) => setDisplayName(event.target.value)} autoComplete="off" /></label>
-        <label><span>رمز تفعيل المدير</span><input type="text" value={activationCredential} onChange={(event) => setActivationCredential(event.target.value)} autoComplete="off" /></label>
-        <label><span>PIN (6 أرقام)</span><input type="password" inputMode="numeric" maxLength={6} value={pin} onChange={(event) => setPin(event.target.value.replace(/[^0-9]/g, ""))} autoComplete="off" /></label>
-        <label><span>تأكيد PIN</span><input type="password" inputMode="numeric" maxLength={6} value={confirmPin} onChange={(event) => setConfirmPin(event.target.value.replace(/[^0-9]/g, ""))} autoComplete="off" /></label>
+      <section className="director-auth-card" aria-labelledby="director-trial-pin-title">
+        <h1 id="director-trial-pin-title">إنشاء رمز الدخول</h1>
+        <label><span>الرمز (6 أرقام)</span><input type="password" inputMode="numeric" maxLength={6} value={pin} onChange={(event) => setPin(event.target.value.replace(/[^0-9]/g, ""))} autoFocus autoComplete="off" /></label>
+        <label><span>تأكيد الرمز</span><input type="password" inputMode="numeric" maxLength={6} value={confirmPin} onChange={(event) => setConfirmPin(event.target.value.replace(/[^0-9]/g, ""))} autoComplete="off" onKeyDown={(event) => { if (event.key === "Enter") void submitPin(); }} /></label>
         {error && <div role="alert" className="director-auth-error">{error}</div>}
-        <button type="button" onClick={() => { void submit(); }} disabled={submitting}>{submitting ? "جارٍ التفعيل…" : "تفعيل"}</button>
+        <button type="button" onClick={() => { void submitPin(); }} disabled={submitting || pin.length !== 6 || confirmPin.length !== 6}>{submitting ? "جارٍ الدخول…" : "دخول خبير المدير"}</button>
       </section>
     </main>
   );
 }
 
-// ===== شاشة إدخال PIN (locked/cooldown) =====
+// ===== شاشة إدخال PIN (locked/cooldown) — تعمل لكلا trial وactivated =====
 
-function DirectorPinScreen({ access, onSuccess }: { access: Extract<DirectorAccessState, { status: "locked" }>; onSuccess: () => void }) {
+function DirectorPinScreen({ access, onSuccess, onTrialExpired }: { access: Extract<DirectorAccessState, { status: "locked" }>; onSuccess: () => void; onTrialExpired: (userId: string) => void }) {
   const [pin, setPin] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -130,7 +109,7 @@ function DirectorPinScreen({ access, onSuccess }: { access: Extract<DirectorAcce
   const submit = async () => {
     if (inCooldown) return;
     setError("");
-    if (!/^[0-9]{6}$/.test(pin)) return setError("صيغة PIN غير صالحة — يجب أن تتكون من 6 أرقام.");
+    if (!/^[0-9]{6}$/.test(pin)) return setError("صيغة الرمز غير صالحة.");
     setSubmitting(true);
     try {
       const result = await verifyDirectorPin(access.identity, pin);
@@ -138,7 +117,8 @@ function DirectorPinScreen({ access, onSuccess }: { access: Extract<DirectorAcce
       setPin("");
       if (result.reason === "cooldown") setError("تم قفل الحساب مؤقتًا بعد محاولات متكررة.");
       else if (result.reason === "disabled") setError("هذا الحساب معطَّل حاليًا.");
-      else setError("PIN غير صحيح.");
+      else if (result.reason === "trial_expired") { onTrialExpired(access.identity.userId); return; }
+      else setError("الرمز غير صحيح.");
     } finally {
       setSubmitting(false);
     }
@@ -147,12 +127,109 @@ function DirectorPinScreen({ access, onSuccess }: { access: Extract<DirectorAcce
   return (
     <main dir="rtl" className="director-auth-screen">
       <section className="director-auth-card" aria-labelledby="director-pin-title">
-        <h1 id="director-pin-title">مرحبًا، {access.identity.displayName}</h1>
-        <p>{access.identity.schoolId} — {stageOptions.find((option) => option.value === access.identity.stage)?.label}</p>
-        <label><span>PIN</span><input type="password" inputMode="numeric" maxLength={6} value={pin} onChange={(event) => setPin(event.target.value.replace(/[^0-9]/g, ""))} autoFocus autoComplete="off" onKeyDown={(event) => { if (event.key === "Enter") void submit(); }} disabled={inCooldown} /></label>
+        <h1 id="director-pin-title">{access.authorizationKind === "trial" ? "تجربة خبير المدير" : `مرحبًا بك`}</h1>
+        <p>{access.identity.schoolId}</p>
+        <label><span>رمز الدخول</span><input type="password" inputMode="numeric" maxLength={6} value={pin} onChange={(event) => setPin(event.target.value.replace(/[^0-9]/g, ""))} autoFocus autoComplete="off" onKeyDown={(event) => { if (event.key === "Enter") void submit(); }} disabled={inCooldown} /></label>
         {error && <div role="alert" className="director-auth-error">{error}</div>}
         {inCooldown && <p className="director-auth-cooldown">يُرجى الانتظار {remainingSeconds} ثانية قبل المحاولة مجددًا.</p>}
         <button type="button" onClick={() => { void submit(); }} disabled={submitting || inCooldown || pin.length !== 6}>{submitting ? "جارٍ التحقق…" : "دخول"}</button>
+      </section>
+    </main>
+  );
+}
+
+// ===== انتهاء التجربة =====
+
+function DirectorTrialExpiredScreen({ userId, onActivated }: { userId: string; onActivated: () => void }) {
+  const [credential, setCredential] = useState("");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [mismatchSchools, setMismatchSchools] = useState<AuthorizedSchool[] | null>(null);
+
+  const submit = async (confirmSchoolMismatch: boolean) => {
+    setError("");
+    if (!confirmSchoolMismatch) setMismatchSchools(null);
+    if (!credential.trim()) { setError("الرجاء إدخال رمز التفعيل."); return; }
+    setSubmitting(true);
+    try {
+      const result = await completeDirectorActivation(userId, credential.trim(), { confirmSchoolMismatch });
+      if (result.ok) { onActivated(); return; }
+      if (result.reason === "school_mismatch") {
+        setMismatchSchools(result.authorizedSchools ?? []);
+        setError("رمز التفعيل مرتبط بمدارس مختلفة عن الرقم الذي بدأت به التجربة.");
+      } else {
+        setMismatchSchools(null);
+        setError("رمز التفعيل غير صالح.");
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <main dir="rtl" className="director-auth-screen">
+      <section className="director-auth-card" aria-labelledby="director-trial-expired-title">
+        <h1 id="director-trial-expired-title">انتهت الفترة التجريبية</h1>
+        <p>بياناتك محفوظة بالكامل. فعِّل خبير المدير للمتابعة.</p>
+        <label><span>رمز التفعيل</span><input type="text" value={credential} onChange={(event) => { setCredential(event.target.value); setMismatchSchools(null); }} onPaste={(event) => setCredential(event.clipboardData.getData("text"))} autoComplete="off" disabled={mismatchSchools !== null} /></label>
+        {error && <div role="alert" className="director-auth-error">{error}</div>}
+        {mismatchSchools ? (
+          <>
+            <p>سيتم اعتماد المدارس المخوَّلة في رمز التفعيل فقط: {mismatchSchools.map((school) => school.schoolId).join("، ")}</p>
+            <button type="button" onClick={() => { void submit(true); }} disabled={submitting}>{submitting ? "جارٍ التفعيل…" : "المتابعة بالمدارس المخوَّلة"}</button>
+            <button type="button" onClick={() => { setMismatchSchools(null); setError(""); setCredential(""); }} disabled={submitting}>إلغاء</button>
+          </>
+        ) : (
+          <button type="button" onClick={() => { void submit(false); }} disabled={submitting || !credential.trim()}>{submitting ? "جارٍ التفعيل…" : "تفعيل خبير المدير"}</button>
+        )}
+      </section>
+    </main>
+  );
+}
+
+// ===== شاشة التفعيل من داخل workspace التجربة النشطة — نفس منطق تأكيد التعارض =====
+
+function DirectorActivationScreen({ userId, onActivated }: { userId: string; onActivated: () => void }) {
+  const [credential, setCredential] = useState("");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [mismatchSchools, setMismatchSchools] = useState<AuthorizedSchool[] | null>(null);
+
+  const submit = async (confirmSchoolMismatch: boolean) => {
+    setError("");
+    if (!confirmSchoolMismatch) setMismatchSchools(null);
+    if (!credential.trim()) { setError("الرجاء إدخال رمز التفعيل."); return; }
+    setSubmitting(true);
+    try {
+      const result = await completeDirectorActivation(userId, credential.trim(), { confirmSchoolMismatch });
+      if (result.ok) { onActivated(); return; }
+      if (result.reason === "school_mismatch") {
+        setMismatchSchools(result.authorizedSchools ?? []);
+        setError("رمز التفعيل مرتبط بمدارس مختلفة عن الرقم الذي بدأت به التجربة.");
+      } else {
+        setMismatchSchools(null);
+        setError("رمز التفعيل غير صالح.");
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <main dir="rtl" className="director-auth-screen">
+      <section className="director-auth-card" aria-labelledby="director-activation-title">
+        <h1 id="director-activation-title">تفعيل خبير المدير</h1>
+        <label><span>رمز التفعيل</span><input type="text" value={credential} onChange={(event) => { setCredential(event.target.value); setMismatchSchools(null); }} onPaste={(event) => setCredential(event.clipboardData.getData("text"))} autoComplete="off" disabled={mismatchSchools !== null} /></label>
+        {error && <div role="alert" className="director-auth-error">{error}</div>}
+        {mismatchSchools ? (
+          <>
+            <p>سيتم اعتماد المدارس المخوَّلة في رمز التفعيل فقط: {mismatchSchools.map((school) => school.schoolId).join("، ")}</p>
+            <button type="button" onClick={() => { void submit(true); }} disabled={submitting}>{submitting ? "جارٍ التفعيل…" : "المتابعة بالمدارس المخوَّلة"}</button>
+            <button type="button" onClick={() => { setMismatchSchools(null); setError(""); setCredential(""); }} disabled={submitting}>إلغاء</button>
+          </>
+        ) : (
+          <button type="button" onClick={() => { void submit(false); }} disabled={submitting || !credential.trim()}>{submitting ? "جارٍ التفعيل…" : "تفعيل"}</button>
+        )}
       </section>
     </main>
   );
@@ -162,6 +239,7 @@ function DirectorPinScreen({ access, onSuccess }: { access: Extract<DirectorAcce
 
 export function DirectorAuthGate({ children }: { children: ReactNode }) {
   const [access, setAccess] = useState<DirectorAccessState>({ status: "loading" });
+  const [showActivationScreen, setShowActivationScreen] = useState(false);
   const mountedRef = useRef(true);
   useEffect(() => () => { mountedRef.current = false; }, []);
 
@@ -176,12 +254,20 @@ export function DirectorAuthGate({ children }: { children: ReactNode }) {
     return <main dir="rtl" className="director-auth-loading">جارٍ التحقق…</main>;
   }
   if (access.status === "activation-required") {
-    return <DirectorActivationScreen onSuccess={() => { void refresh(); }} />;
+    return <DirectorTrialStartScreen onSuccess={() => { void refresh(); }} />;
   }
   if (access.status === "locked") {
-    return <DirectorPinScreen access={access} onSuccess={() => { void refresh(); }} />;
+    return <DirectorPinScreen access={access} onSuccess={() => { void refresh(); }} onTrialExpired={() => { void refresh(); }} />;
+  }
+  if (access.status === "trial_expired") {
+    return <DirectorTrialExpiredScreen userId={access.userId} onActivated={() => { void refresh(); }} />;
   }
 
-  const lock = () => { lockDirectorSession(); void refresh(); };
-  return <DirectorAuthContext.Provider value={{ session: access.session, lock }}>{children}</DirectorAuthContext.Provider>;
+  if (showActivationScreen && access.session.authorizationKind === "trial") {
+    return <DirectorActivationScreen userId={access.session.userId} onActivated={() => { setShowActivationScreen(false); void refresh(); }} />;
+  }
+
+  const lock = () => { lockDirectorSession(access.session.userId); void refresh(); };
+  const requestActivation = () => setShowActivationScreen(true);
+  return <DirectorAuthContext.Provider value={{ session: access.session, lock, requestActivation }}>{children}</DirectorAuthContext.Provider>;
 }

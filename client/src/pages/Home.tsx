@@ -1087,15 +1087,17 @@ export default function Home() {
         incompleteCount: groupedPerformanceAreas.filter((area) => area.status === "incomplete").length,
       },
     };
-    if (!("schoolId" in identity)) {
-      throw new Error("Director package export requires a school-linked teacher identity");
-    }
-
+    // PHASE PILOT-50-F2: الفحص الرافض القديم أُزيل — كان يفترض خطأً أن كل
+    // معلم يملك schoolId (مسار setupTeacher القديم فقط). معلم onboarding
+    // جديد (اسم+مرحلة، بلا مدرسة) يجب أن يستطيع التصدير بنجاح — الثقة
+    // الحقيقية للحزمة تأتي من manifest.json الموقَّع تشفيريًا (fingerprint/
+    // signature)، لا من schoolId الوصفي. صفر قيمة مُختلَقة/افتراضية له —
+    // إن غاب فعليًا، يبقى غائبًا تمامًا في identity.json الناتجة.
     const identityMetadata = {
       schemaVersion: 1 as const,
       exportId: metadata.exportId,
       teacherId: identity.userId,
-      schoolId: identity.schoolId,
+      ...("schoolId" in identity ? { schoolId: identity.schoolId } : {}),
       stage: identity.stage,
       displayName: identity.displayName,
       generatedAt: metadata.generatedAt,

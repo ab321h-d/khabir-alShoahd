@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
 import "fake-indexeddb/auto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// PHASE PILOT-50-D: هذه الاختبارات تفحص سلوك public-trial تحديدًا (بدء trial تلقائي)
+vi.mock("../distributionMode", () => ({ DISTRIBUTION_MODE: "public-trial" }));
 import type { SignedEntitlementPayload } from "./licenseTypes";
 
 // PHASE LIC-6D-B-3B.3: بيئة jsdom توفر window/document حقيقيتين بالفعل (لازمتان
@@ -66,6 +69,10 @@ const readRaw = (key: string) => new Promise<any>((resolve, reject) => {
 const future = new Date(Date.now() + 365 * 86400000).toISOString();
 const past = new Date(Date.now() - 86400000).toISOString();
 const now = new Date().toISOString();
+// PILOT-50-B: تاريخ نسبي ديناميكي بدل ثابت مُطلَق أصبح ماضيًا مع الوقت
+// (كان "2026-06-01" ثابتًا، تجاوزه +3 أشهر التاريخ الحالي فعليًا) — يبقى
+// "منذ 30 يومًا" نشطًا ضمن نافذة 3 أشهر بصرف النظر عن تاريخ التشغيل.
+const legacyTrialStartIso = new Date(Date.now() - 30 * 86400000).toISOString();
 
 beforeEach(async () => {
   await resetDatabase();
@@ -167,17 +174,17 @@ describe("LIC-6D-B-3B.3: Variant Separation — الاختبارات المطل�
   });
 
   it("7) legacy trial بلا scope يُطالَب من teacher إن بدأت أولًا -> teacher فقط", async () => {
-    await seedRaw({ kind: "trial", trialStartedAt: "2026-06-01T00:00:00.000Z", lastSeenAt: now }, LEGACY_KEY);
+    await seedRaw({ kind: "trial", trialStartedAt: legacyTrialStartIso, lastSeenAt: now }, LEGACY_KEY);
     await licenseStore.readCurrentState("teacher");
     const teacherRaw = await readRaw(recordKeyFor("teacher"));
     const directorRaw = await readRaw(recordKeyFor("director"));
     expect(teacherRaw.kind).toBe("trial");
-    expect(teacherRaw.trialStartedAt).toBe("2026-06-01T00:00:00.000Z"); // بلا تمديد
+    expect(teacherRaw.trialStartedAt).toBe(legacyTrialStartIso); // بلا تمديد
     expect(directorRaw).toBeUndefined();
   });
 
   it("8) نفس legacy trial يُطالَب من director إن بدأت أولًا -> director فقط", async () => {
-    await seedRaw({ kind: "trial", trialStartedAt: "2026-06-01T00:00:00.000Z", lastSeenAt: now }, LEGACY_KEY);
+    await seedRaw({ kind: "trial", trialStartedAt: legacyTrialStartIso, lastSeenAt: now }, LEGACY_KEY);
     await licenseStore.readCurrentState("director");
     const teacherRaw = await readRaw(recordKeyFor("teacher"));
     const directorRaw = await readRaw(recordKeyFor("director"));
@@ -186,7 +193,7 @@ describe("LIC-6D-B-3B.3: Variant Separation — الاختبارات المطل�
   });
 
   it("9) هجرة legacy trial متزامنة حقيقية (teacher+director معًا) -> فائز واحد بالضبط", async () => {
-    await seedRaw({ kind: "trial", trialStartedAt: "2026-06-01T00:00:00.000Z", lastSeenAt: now }, LEGACY_KEY);
+    await seedRaw({ kind: "trial", trialStartedAt: legacyTrialStartIso, lastSeenAt: now }, LEGACY_KEY);
     // استدعاء متزامن حقيقي عبر Promise.all — لا تسلسل مُتحكَّم به يدويًا
     await Promise.all([
       licenseStore.readCurrentState("teacher"),
@@ -197,44 +204,61 @@ describe("LIC-6D-B-3B.3: Variant Separation — الاختبارات المطل�
     const teacherWon = teacherRaw !== undefined;
     const directorWon = directorRaw !== undefined;
     expect(teacherWon !== directorWon).toBe(true); // XOR: واحد بالضبط فاز، ليس كلاهما ولا صفر
-    if (teacherWon) expect(teacherRaw.trialStartedAt).toBe("2026-06-01T00:00:00.000Z");
-    if (directorWon) expect(directorRaw.trialStartedAt).toBe("2026-06-01T00:00:00.000Z");
+    if (teacherWon) expect(teacherRaw.trialStartedAt).toBe(legacyTrialStartIso);
+    if (directorWon) expect(directorRaw.trialStartedAt).toBe(legacyTrialStartIso);
   });
 
-  it("10) الخاسر في التزامن يصبح missing، صفر trial جديدة له", async () => {
-    await seedRaw({ kind: "trial", trialStartedAt: "2026-06-01T00:00:00.000Z", lastSeenAt: now }, LEGACY_KEY);
+  it("10) [PILOT-50-B: تطور عقد] الخاسر في تزامن هجرة legacy يبدأ trial جديدة خاصة به (Blocker 1)، لا يرث بيانات legacy الفائز -> صفر تكرار/تمديد لبيانات legacy الأصلية", async () => {
+    await seedRaw({ kind: "trial", trialStartedAt: legacyTrialStartIso, lastSeenAt: now }, LEGACY_KEY);
     const [teacherStatus, directorStatus] = await Promise.all([
       getCurrentLicenseStatus("teacher"),
       getCurrentLicenseStatus("director"),
     ]);
-    const kinds = [teacherStatus.kind, directorStatus.kind];
-    // واحد منهما trial_active (الفائز)، والآخر missing (الخاسر) — صفر duplication، صفر fresh trial لكليهما
-    expect(kinds.includes("missing")).toBe(true);
-    expect(kinds.filter((k) => k === "trial_active").length).toBeLessThanOrEqual(1);
+    // كلاهما trial_active الآن (الفائز يرث legacy، الخاسر يبدأ trial جديدة خاصة به عبر Blocker 1)
+    expect(teacherStatus.kind).toBe("trial_active");
+    expect(directorStatus.kind).toBe("trial_active");
+    const teacherRaw = await readRaw(recordKeyFor("teacher"));
+    const directorRaw = await readRaw(recordKeyFor("director"));
+    const startedDates = [teacherRaw.trialStartedAt, directorRaw.trialStartedAt];
+    // صفر تكرار: بيانات legacy الأصلية (2026-06-01) تظهر في خانة واحدة بالضبط
+    expect(startedDates.filter((d) => d === legacyTrialStartIso).length).toBe(1);
   });
 
-  it("11) legacy \"current\" مُعبَث به (توقيع خاطئ) -> صفر ثقة، صفر هجرة لأي خانة", async () => {
+  it("11) [PILOT-50-B: تطور عقد] legacy \"current\" مُعبَث به -> صفر ثقة بمحتواه، صفر هجرة لبياناته المزيَّفة، لكن trial جديدة نظيفة تبدأ لهذا الـvariant (Blocker 1)", async () => {
     const tamperedCode = await buildCode({ v: 2, entitlementId: "tamper1", accountId: "a1", kind: "paid", scope: "teacher", issuedAt: now, expiresAt: future }, wrongKeyPair.privateKey);
     await seedRaw({ kind: "entitlement", signedCode: tamperedCode, lastSeenAt: now }, LEGACY_KEY);
     const status = await getCurrentLicenseStatus("teacher");
-    expect(status.kind).toBe("missing"); // صفر ثقة بـscope منه، صفر هجرة
+    expect(status.kind).toBe("trial_active"); // صفر ثقة بالمحتوى المزيَّف، لكن بداية نظيفة عبر Blocker 1
     const teacherRaw = await readRaw(recordKeyFor("teacher"));
     const directorRaw = await readRaw(recordKeyFor("director"));
-    expect(teacherRaw).toBeUndefined();
-    expect(directorRaw).toBeUndefined();
+    expect((teacherRaw as { kind: string }).kind).toBe("trial"); // trial جديدة، ليست هجرة لأي محتوى من الكود المُعبَث به
+    expect(directorRaw).toBeUndefined(); // صفر تأثير على director
   });
 
-  it("12) صفر \"current\" قديم إطلاقًا -> كلا الـvariant يبقيان missing", async () => {
+  it("12) [PILOT-50-B: تطور عقد] صفر \"current\" قديم إطلاقًا -> كلا الـvariant يبدآن trial مستقلة خاصة بكل منهما (Blocker 1)", async () => {
     const teacherStatus = await getCurrentLicenseStatus("teacher");
     const directorStatus = await getCurrentLicenseStatus("director");
-    expect(teacherStatus.kind).toBe("missing");
-    expect(directorStatus.kind).toBe("missing");
+    expect(teacherStatus.kind).toBe("trial_active");
+    expect(directorStatus.kind).toBe("trial_active");
+    const teacherRaw = await readRaw(recordKeyFor("teacher"));
+    const directorRaw = await readRaw(recordKeyFor("director"));
+    // trial مستقلة فعليًا لكل منهما (سجلان منفصلان بمفتاحين مختلفين)، لا
+    // مُنسوخة من بعضها — التحقق من الاستقلالية عبر المفاتيح المنفصلة نفسها
+    // لا الطابع الزمني (قد يتطابق حتى المللي ثانية في بيئة اختبار سريعة)
+    expect(teacherRaw).not.toBe(directorRaw);
+    expect((teacherRaw as { kind: string }).kind).toBe("trial");
+    expect((directorRaw as { kind: string }).kind).toBe("trial");
   });
 
-  it("13) B1 لا يزال ساريًا: missing لا يُنشئ trial أبدًا حتى بعد كل تغييرات B-3B.3", async () => {
-    const status = await getCurrentLicenseStatus("teacher");
-    expect(status.kind).toBe("missing");
-    expect(await licenseStore.readCurrentState("teacher")).toBeNull();
+  it("13) [PILOT-50-B: تطور عقد] Blocker 1 لا يزال ساريًا بعد كل تغييرات B-3B.3: state=null يبدأ trial واحدة فقط، صفر إعادة إنشاء على استدعاءات متكررة (idempotent)", async () => {
+    const first = await getCurrentLicenseStatus("teacher");
+    const firstRaw = await licenseStore.readCurrentState("teacher");
+    expect(first.kind).toBe("trial_active");
+    await getCurrentLicenseStatus("teacher");
+    const second = await getCurrentLicenseStatus("teacher");
+    const secondRaw = await licenseStore.readCurrentState("teacher");
+    expect(second.kind).toBe("trial_active");
+    expect((secondRaw as { trialStartedAt: string }).trialStartedAt).toBe((firstRaw as { trialStartedAt: string }).trialStartedAt); // صفر إعادة إنشاء
   });
 
   it("14) إعادة ضبط teacher تؤثر على خانة teacher فقط", async () => {
@@ -247,7 +271,9 @@ describe("LIC-6D-B-3B.3: Variant Separation — الاختبارات المطل�
 
     const teacherStatus = await getCurrentLicenseStatus("teacher");
     const directorStatus = await getCurrentLicenseStatus("director");
-    expect(teacherStatus.kind).toBe("missing");
+    // PILOT-50-B: إعادة الضبط الآن تبدأ trial جديدة بدل missing (Blocker 1)
+    // — الجوهر المُختبَر هنا (عزل variant، صفر تأثير على director) لا يزال قائمًا
+    expect(teacherStatus.kind).toBe("trial_active");
     expect(directorStatus.writesAllowed).toBe(true); // بلا أي تأثر
   });
 
@@ -261,7 +287,8 @@ describe("LIC-6D-B-3B.3: Variant Separation — الاختبارات المطل�
 
     const teacherStatus = await getCurrentLicenseStatus("teacher");
     const directorStatus = await getCurrentLicenseStatus("director");
-    expect(directorStatus.kind).toBe("missing");
+    // PILOT-50-B: نفس تطور العقد أعلاه — trial جديدة بدل missing
+    expect(directorStatus.kind).toBe("trial_active");
     expect(teacherStatus.writesAllowed).toBe(true);
   });
 

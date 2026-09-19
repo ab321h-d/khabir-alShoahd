@@ -3,6 +3,7 @@ import { verifySignedEntitlementCode } from "./licenseCrypto";
 import { computeLicenseStatus, computeSignedEntitlementStatus } from "./licenseLogic";
 import { licenseStore } from "./licenseStore";
 import type { AppLicenseVariant, LicenseStatus } from "./licenseTypes";
+import { DISTRIBUTION_MODE } from "../distributionMode";
 import { isWriteAllowedSync, setCachedWriteStatus } from "./writeGuardCache";
 
 export { isWriteAllowedSync } from "./writeGuardCache";
@@ -99,12 +100,34 @@ export const getCurrentLicenseStatus = async (variant: AppLicenseVariant): Promi
     status = computeLicenseStatus(state, now, variant);
     await licenseStore.touchLastSeen(variant, now);
   } else {
-    // PHASE LIC-6D-B-3B.3-B1: state === null بالضبط — صفر استدعاء لـ
-    // getOrInitializeState هنا نهائيًا، صفر تجربة محلية جديدة تُنشَأ أبدًا.
-    // هذا هو المسار الوحيد الذي كان يُنشئ trial جديدة تلقائيًا سابقًا —
-    // مُغلَق الآن، الخادم هو السلطة الوحيدة لبدء/استعادة Trial.
-    status = buildMissingStatus(now);
-    // صفر touchLastSeen هنا عمدًا — لا يوجد سجل محلي أصلًا لتحديث وقته.
+    // PHASE PILOT-50-D: بدء التجربة التلقائي عند state===null الآن مشروط
+    // بـdistributionMode لـ**teacher فقط** (وقت بناء، ثابت، صفر إمكانية
+    // تغيير من runtime):
+    //
+    // public-trial: نفس سلوك PILOT-50-B الأصلي حرفيًا — تجربة 3 أشهر تبدأ
+    //   تلقائيًا (الاسم + المرحلة → trial، بلا Pilot credential).
+    //
+    // controlled-pilot: تبقى missing — صفر بدء تلقائي. التجربة تبدأ فقط
+    //   عبر استدعاء صريح منفصل من teacherAuth.ts بعد نجاح التحقق من
+    //   Teacher Pilot activation موقَّع (licenseStore.getOrInitializeState
+    //   يُستدعى مباشرة هناك، لا عبر هذا الفرع إطلاقًا في controlled-pilot).
+    //
+    // PHASE PILOT-50-F3-FIX: director **لا تخضع لـDISTRIBUTION_MODE إطلاقًا**
+    // — هذا الشرط صُمِّم حصرًا لسياق توزيع Teacher Pilot المُحكَم (منع بدء
+    // تجربة تلقائية لشخص خارج البرنامج). مفهوم "Pilot مُحكَم" لم يُطبَّق أو
+    // يُقصَد يومًا لسياق المدير — المدير له نظام تفويض مختلف تمامًا ومنفصل
+    // بالكامل (تفعيل موقَّع + PIN، directorAuth.ts) هو الحارس الحقيقي ضد
+    // الوصول غير المُخوَّل؛ إخضاعه أيضًا لشرط DISTRIBUTION_MODE كان تطبيقًا
+    // غير مقصود لمنطق صُمِّم فقط للمعلم على الـvariant الآخر بالخطأ. مدير
+    // ناجح (بعد اجتياز نظام التفعيل+PIN المستقل) يبدأ trial محلية تلقائيًا
+    // دائمًا، تمامًا كسلوك public-trial، بصرف النظر عن قيمة البناء.
+    if (variant === "director" || DISTRIBUTION_MODE === "public-trial") {
+      const trialState = await licenseStore.getOrInitializeState(variant, now);
+      status = computeLicenseStatus(trialState, now, variant);
+      await licenseStore.touchLastSeen(variant, now);
+    } else {
+      status = buildMissingStatus(now);
+    }
   }
 
   // PHASE LIC-6B-FIX2 (مُعاد تصميمها لكل variant في B3-REAL-FIX): عدَّاد

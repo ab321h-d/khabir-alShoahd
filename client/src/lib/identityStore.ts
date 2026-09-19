@@ -46,7 +46,11 @@ const storeName = "identities";
 const credentialsStoreName = "directorCredentials";
 const devicesStoreName = "trustedDevices";
 const consumedActivationsStoreName = "consumedActivations";
-const databaseVersion = 3;
+// PHASE PILOT-50-F3.4: مخزنان جديدان فقط — DirectorTrial منفصل تمامًا عن
+// DirectorAuthorization (الفصل الأمني بنيوي في التخزين نفسه، لا فقط النوع).
+const directorTrialStoreName = "directorTrial";
+const directorAuthorizationStoreName = "directorAuthorization";
+const databaseVersion = 4;
 
 export interface DirectorCredentialRecord {
   userId: string;
@@ -63,6 +67,35 @@ export interface TrustedDeviceRecord {
   deviceId: string;
   userId: string;
   registeredAt: string;
+}
+
+/**
+ * PHASE PILOT-50-F3.4: تجربة مدير مستقلة تمامًا — **ليست تفويضًا رسميًا
+ * تحت أي ظرف**. صفر UserIdentity(role="director") تُنشَأ من هذا المسار —
+ * الفصل الأمني بين "تجربة" و"تفويض" بنيوي بالكامل، لا وصفي فقط.
+ */
+export interface DirectorTrialRecord {
+  userId: string;
+  schoolId: string; // بيانات تجربة فقط — صفر إثبات هوية، صفر تحقق
+  startedAt: string;
+}
+
+export interface AuthorizedSchool {
+  schoolId: string;
+  stage: SchoolStage;
+  displayName?: string;
+}
+
+/**
+ * PHASE PILOT-50-F3.4: التفويض الدائم الوحيد المعتمَد أمنيًا. "trial" ليس
+ * أحد قيم source الممكنة عمدًا — لا يوجد مسار يجعل امتلاك DirectorTrial
+ * وحده يُفسَّر كتفويض رسمي تحت أي ظرف (فصل بنيوي، لا وصفي).
+ */
+export interface DirectorAuthorizationRecord {
+  userId: string;
+  source: "signed_activation_v1" | "backend_authorization" | "legacy_migrated";
+  schools: AuthorizedSchool[];
+  authorizedAt: string;
 }
 
 const validStages: readonly SchoolStage[] = ["elementary", "middle", "secondary"];
@@ -127,6 +160,13 @@ const openDatabase = () => new Promise<IDBDatabase>((resolve, reject) => {
     // استُهلِكت على هذا التثبيت، لمنع إعادة استخدامها محليًا (لا عبر أجهزة).
     if (!database.objectStoreNames.contains(consumedActivationsStoreName)) {
       database.createObjectStore(consumedActivationsStoreName, { keyPath: "activationId" });
+    }
+    // PHASE PILOT-50-F3.4: مخزنان جديدان فقط — صفر لمس لأي مخزن سابق.
+    if (!database.objectStoreNames.contains(directorTrialStoreName)) {
+      database.createObjectStore(directorTrialStoreName, { keyPath: "userId" });
+    }
+    if (!database.objectStoreNames.contains(directorAuthorizationStoreName)) {
+      database.createObjectStore(directorAuthorizationStoreName, { keyPath: "userId" });
     }
   };
   request.onsuccess = () => resolve(request.result);
@@ -235,6 +275,52 @@ export const identityStore = {
   },
 
   // ===== PHASE ID-2: بيانات اعتماد PIN المدير + الأجهزة الموثوقة =====
+
+  /**
+   * PHASE PILOT-50-F3.4: إنشاء هوية بمعرِّف مُحدَّد صراحة (لا عشوائي) —
+   * يُستخدَم **فقط** عند انتقال DirectorTrial → DirectorAuthorization
+   * للحفاظ على نفس userId (فيبقى DirectorCredentialRecord's PIN صالحًا
+   * تلقائيًا بلا أي إعادة كتابة، لأنه مفتاح على نفس userId).
+   */
+  async createIdentityWithId(userId: string, input: { role: IdentityRole; schoolId: string; stage: SchoolStage; displayName: string }): Promise<UserIdentity> {
+    const role = validateRole(input.role);
+    const schoolId = validateSchoolId(input.schoolId);
+    const stage = validateStage(input.stage);
+    const displayName = validateDisplayName(input.displayName);
+    const now = new Date().toISOString();
+    const identity: UserIdentity = { userId, role, schoolId, stage, displayName, createdAt: now, updatedAt: now, status: "active" };
+    const database = await openDatabase();
+    await closeWhenDone(database, requestValue(database.transaction(storeName, "readwrite").objectStore(storeName).put(identity)));
+    return identity;
+  },
+
+  async getDirectorTrial(userId: string): Promise<DirectorTrialRecord | null> {
+    const database = await openDatabase();
+    const result = await closeWhenDone(database, requestValue(database.transaction(directorTrialStoreName, "readonly").objectStore(directorTrialStoreName).get(userId)));
+    return (result as DirectorTrialRecord | undefined) || null;
+  },
+
+  async putDirectorTrial(record: DirectorTrialRecord): Promise<void> {
+    const database = await openDatabase();
+    await closeWhenDone(database, requestValue(database.transaction(directorTrialStoreName, "readwrite").objectStore(directorTrialStoreName).put(record)));
+  },
+
+  /** يُستدعى فقط عند نجاح الانتقال إلى DirectorAuthorization — التجربة انتهت رسميًا. */
+  async deleteDirectorTrial(userId: string): Promise<void> {
+    const database = await openDatabase();
+    await closeWhenDone(database, requestValue(database.transaction(directorTrialStoreName, "readwrite").objectStore(directorTrialStoreName).delete(userId)));
+  },
+
+  async getDirectorAuthorization(userId: string): Promise<DirectorAuthorizationRecord | null> {
+    const database = await openDatabase();
+    const result = await closeWhenDone(database, requestValue(database.transaction(directorAuthorizationStoreName, "readonly").objectStore(directorAuthorizationStoreName).get(userId)));
+    return (result as DirectorAuthorizationRecord | undefined) || null;
+  },
+
+  async putDirectorAuthorization(record: DirectorAuthorizationRecord): Promise<void> {
+    const database = await openDatabase();
+    await closeWhenDone(database, requestValue(database.transaction(directorAuthorizationStoreName, "readwrite").objectStore(directorAuthorizationStoreName).put(record)));
+  },
 
   async getDirectorCredential(userId: string): Promise<DirectorCredentialRecord | null> {
     const database = await openDatabase();

@@ -9,7 +9,7 @@
 
 import type { SchoolStage } from "./identityStore";
 import { identityStore } from "./identityStore";
-import { verifyActivationSignature } from "./teacherActivationCrypto";
+import { verifyActivationSignature, parseActivationCredential } from "./teacherActivationCrypto";
 import { TEACHER_ACTIVATION_PUBLIC_KEY_JWK } from "./teacherActivationConfig";
 
 export type TeacherActivationPayload = {
@@ -75,4 +75,27 @@ export const verifyTeacherActivation = async (code: string, scope: { schoolId: s
   if (consumed) return { ok: false, error: "already_consumed" };
 
   return { ok: true, payload };
+};
+
+/**
+ * PHASE PILOT-50-D2: استخراج معلوماتي بحت لـ(schoolId, stage) المُرشَّحين
+ * من بيانات اعتماد التفعيل — **بلا أي تحقق توقيع بعد**، لا يُعتمَد عليه
+ * كسلطة بذاته إطلاقًا. الغرض الوحيد: تمرير القيمتين كـ`scope` المتوقَّع
+ * لـverifyTeacherActivation الحقيقية أعلاه، التي تُجري التحقق الكامل من
+ * التوقيع أولًا ثم تُطابِق scope مع الحمولة **المُتحقَّق منها فعليًا بعد
+ * ذلك** — أي قيمة مُستخلَصة هنا بشكل غير صادق (تلاعب بالنص الخام) سترسب
+ * فورًا في scope_mismatch لأنها لن تطابق الحمولة الموقَّعة الحقيقية. هذا
+ * يجعل schoolId مصدره الحقيقي الوحيد هو الاعتماد الموقَّع نفسه — صفر قيمة
+ * مُختلَقة/مُخمَّنة من طرف العميل أو hardcoded في الكود.
+ */
+export const peekActivationScope = (code: string): { schoolId: string; stage: SchoolStage } | null => {
+  const parsed = parseActivationCredential(code);
+  if (!parsed) return null;
+  try {
+    const candidate: unknown = JSON.parse(parsed.payloadText);
+    if (isActivationPayloadShape(candidate)) return { schoolId: candidate.schoolId, stage: candidate.stage };
+  } catch {
+    // تجاهل — صفر ثقة بمحتوى لا يمكن تحليله، peekActivationScope تُعيد null فقط
+  }
+  return null;
 };

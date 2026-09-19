@@ -9,6 +9,7 @@ import { AlignmentType, BorderStyle, Document, ImageRun, Packer, PageBorderDispl
 import { escapeHtml } from "./sanitize";
 import type { CompletenessMetadata } from "./completenessCheck";
 import type { SchoolStage } from "./identityStore";
+import { buildSignedManifestForExport } from "./teacherSenderIdentity";
 
 export type PortfolioImage = {
   blob: Blob;
@@ -218,7 +219,12 @@ export type TeacherIdentityMetadata = {
   schemaVersion: 1;
   exportId: string;
   teacherId: string;
-  schoolId: string;
+  /**
+   * PHASE PILOT-50-F2: اختياري — معلم onboarding جديد (اسم+مرحلة فقط)
+   * لا يملكه. صفر قيمة مُختلَقة أبدًا — الثقة الحقيقية للحزمة تأتي من
+   * manifest.json الموقَّع تشفيريًا، لا من هذا الحقل الوصفي.
+   */
+  schoolId?: string;
   stage: SchoolStage;
   displayName: string;
   generatedAt: string;
@@ -231,15 +237,37 @@ export type TeacherIdentityMetadata = {
  * يُضغَط داخل الحزمة. completenessMetadata وidentity يُحسَبان مسبقًا من
  * طرف المستدعي (Home.tsx)، ولا يُعاد حسابهما هنا لتفادي أي ازدواجية منطق.
  */
+/**
+ * PHASE PILOT-50-F: تبني الحزمة الآن manifest.json موقَّعًا تشفيريًا +
+ * signature.txt (§4/§6) — بالإضافة إلى identity.json القديمة (تبقى
+ * محفوظة للتوافق الخلفي فقط، §14: **لا تُشكِّل مصدر ثقة مستقلًا بعد
+ * الآن**، manifest.json الموقَّع هو السلطة الوحيدة لهوية المُرسِل
+ * التشفيرية). المفتاح الخاص **لا يدخل هذه الدالة أو نتيجتها إطلاقًا** —
+ * buildSignedManifestForExport تُعيد فقط {manifest, signature} كنص/JSON.
+ */
 export const buildDirectorPackage = async (data: PortfolioExportData, completenessMetadata: CompletenessMetadata, identity: TeacherIdentityMetadata): Promise<Blob> => {
   const pdfBlob = await exportPortfolioPdf(data);
   const pdfBytes = new Uint8Array(await pdfBlob.arrayBuffer());
   const metadataBytes = new TextEncoder().encode(JSON.stringify(completenessMetadata));
   const identityBytes = new TextEncoder().encode(JSON.stringify(identity));
+
+  const { manifest, signature } = await buildSignedManifestForExport({
+    exportId: identity.exportId,
+    generatedAt: identity.generatedAt,
+    displayName: identity.displayName,
+    stage: identity.stage,
+    pdfBytes,
+    completenessJsonBytes: metadataBytes,
+  });
+  const manifestBytes = new TextEncoder().encode(JSON.stringify(manifest));
+  const signatureBytes = new TextEncoder().encode(signature);
+
   const zipped = zipSync({
     "portfolio.pdf": pdfBytes,
     "completeness.json": metadataBytes,
     "identity.json": identityBytes,
+    "manifest.json": manifestBytes,
+    "signature.txt": signatureBytes,
   });
   return new Blob([zipped], { type: "application/zip" });
 };

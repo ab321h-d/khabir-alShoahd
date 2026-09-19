@@ -1,4 +1,9 @@
-import { assertWriteAllowed } from "./license/licenseGuard";
+/**
+ * PHASE PILOT-50-F3.4: حارس الكتابة المستقل تمامًا عن نظام ترخيص
+ * المعلم — assertDirectorWriteAllowed تعتمد على DirectorTrial/
+ * DirectorAuthorization الجديدين، صفر ربط بـlicenseGuard.ts.
+ */
+import { assertDirectorWriteAllowed } from "./directorAuth";
 import type { CompletenessMetadata } from "./completenessCheck";
 import type { SchoolStage, TeacherIdentityMetadata } from "./teacherIdentityImport";
 
@@ -98,6 +103,18 @@ export const directorStore = {
     return closeWhenDone(database, requestValue(database.transaction(storeName, "readonly").objectStore(storeName).getAll()).then((items) => (items as StoredSubmission[]).map(publicRecord).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))));
   },
 
+  /**
+   * PHASE PILOT-50-F3.2: قراءة فقط، بلا حراسة — مصدر الحقيقة الموثوق
+   * الوحيد لـ"هل حُفِظ استيراد بهذا exportId التشفيري فعليًا؟". يستعلم
+   * نفس القاعدة التي كتبت السجل (directorStore نفسها)، صفر اعتماد على
+   * قاعدة/سجل منفصل — هذا يمنع بنيويًا أي تكرار ناتج عن فشل لاحق في
+   * تسجيل replay بقاعدة أخرى بعد نجاح الحفظ الفعلي هنا.
+   */
+  async findByExportId(exportId: string): Promise<DirectorSubmission | null> {
+    const items = await this.list();
+    return items.find((item) => item.exportId === exportId) ?? null;
+  },
+
   /** R-NEXT-3: قراءة فقط، بلا حراسة (مطابق لتصنيف عمليات القراءة المعفاة في كل المشروع). */
   async getTeacherContact(normalizedName: string): Promise<string | null> {
     if (!normalizedName) return null;
@@ -123,7 +140,7 @@ export const directorStore = {
   /** R-NEXT-3: حراسة الكتابة — upsert صريح، يمر عبر write guards الحالية. */
   async upsertTeacherContact(normalizedName: string, whatsappNumber: string): Promise<void> {
     if (!normalizedName || !whatsappNumber.trim()) return;
-    await assertWriteAllowed("director");
+    await assertDirectorWriteAllowed();
     const database = await openDatabase();
     const contact: TeacherContact = { normalizedName, whatsappNumber, updatedAt: new Date().toISOString() };
     await closeWhenDone(database, requestValue(database.transaction(teacherContactsStoreName, "readwrite").objectStore(teacherContactsStoreName).put(contact)));
@@ -145,26 +162,39 @@ export const directorStore = {
   /** PHASE ID-3E: حراسة الكتابة — نفس نمط upsertTeacherContact، مخزن منفصل بالكامل. */
   async upsertTeacherContactByIdentity(teacherId: string, whatsappNumber: string): Promise<void> {
     if (!teacherId || !whatsappNumber.trim()) return;
-    await assertWriteAllowed("director");
+    await assertDirectorWriteAllowed();
     const database = await openDatabase();
     const contact: TeacherContactByIdentity = { teacherId, whatsappNumber, updatedAt: new Date().toISOString() };
     await closeWhenDone(database, requestValue(database.transaction(teacherContactsByIdentityStoreName, "readwrite").objectStore(teacherContactsByIdentityStoreName).put(contact)));
   },
 
-  /** PHASE B.8: حراسة الكتابة (إنشاء). موقع الاستدعاء الوحيد في Director.tsx مغلَّف بـtry/catch. */
-  async save(file: File, teacherName: string, academicTerm: AcademicTerm = "", completenessMetadata: CompletenessMetadata | null = null, teacherIdentity: TeacherIdentityMetadata | null = null): Promise<DirectorSubmission> {
-    await assertWriteAllowed("director");
+  /**
+   * PHASE B.8: حراسة الكتابة (إنشاء). موقع الاستدعاء الوحيد في Director.tsx مغلَّف بـtry/catch.
+   *
+   * PHASE PILOT-50-F3.2: cryptographicExportId معامل جديد اختياري، منفصل
+   * تمامًا عن teacherIdentity (الذي يعتمد على identity.json legacy، قد
+   * يكون null حتى لو نجح التحقق التشفيري الكامل عبر manifest.json). يُخزَّن
+   * دائمًا في حقل exportId عند توفره — هذا يجعل directorStore نفسها (لا
+   * سجل ثقة منفصل بقاعدة أخرى) مصدر الحقيقة الموثوق الوحيد لـ"هل حُفِظ هذا
+   * الاستيراد فعليًا؟"، بصرف النظر عن وجود identity.json legacy.
+   */
+  async save(file: File, teacherName: string, academicTerm: AcademicTerm = "", completenessMetadata: CompletenessMetadata | null = null, teacherIdentity: TeacherIdentityMetadata | null = null, cryptographicExportId: string | null = null): Promise<DirectorSubmission> {
+    await assertDirectorWriteAllowed();
     const database = await openDatabase();
     const now = new Date().toISOString();
+    const resolvedExportId = cryptographicExportId ?? teacherIdentity?.exportId;
     const item: StoredSubmission = {
       id: crypto.randomUUID?.() || `sub-${Date.now()}-${Math.random().toString(16).slice(2)}`, fileName: file.name, teacherName: teacherName.trim() || file.name.replace(/\.pdf$/i, ""), importedAt: now, updatedAt: now,
       size: file.size, reviewStatus: "new", reviewLevel: "", academicTerm, comment: "", whatsappNumber: "", whatsappMessage: "", pdf: file, completenessMetadata,
+      ...(resolvedExportId ? { exportId: resolvedExportId } : {}),
       ...(teacherIdentity ? {
         teacherId: teacherIdentity.teacherId,
-        schoolId: teacherIdentity.schoolId,
+        // PHASE PILOT-50-F3-FIX: صفر تخزين لقيمة undefined صريحة — معلم
+        // onboarding جديد (اسم+مرحلة فقط) لا يملك schoolId إطلاقًا؛ يُخزَّن
+        // الحقل فقط إن كان موجودًا فعليًا وغير فارغ (مسار legacy بمدرسة حقيقية).
+        ...(teacherIdentity.schoolId ? { schoolId: teacherIdentity.schoolId } : {}),
         stage: teacherIdentity.stage,
         teacherDisplayName: teacherIdentity.displayName,
-        exportId: teacherIdentity.exportId,
         identityGeneratedAt: teacherIdentity.generatedAt,
       } : {}),
     };
@@ -178,7 +208,7 @@ export const directorStore = {
    * التنفيذ لتفصيل هذه النقطة (فشل صامت غير معطوب، لا انهيار).
    */
   async update(id: string, patch: Partial<Pick<DirectorSubmission, "reviewStatus" | "reviewLevel" | "academicTerm" | "comment" | "whatsappNumber" | "whatsappMessage">>): Promise<DirectorSubmission | null> {
-    await assertWriteAllowed("director");
+    await assertDirectorWriteAllowed();
     const database = await openDatabase();
     const transaction = database.transaction(storeName, "readwrite");
     const store = transaction.objectStore(storeName);
@@ -196,14 +226,14 @@ export const directorStore = {
 
   /** PHASE LIC-3: حراسة الكتابة — حذف تسليم كامل، بلا استثناء (كانت غائبة). */
   async remove(id: string) {
-    await assertWriteAllowed("director");
+    await assertDirectorWriteAllowed();
     const database = await openDatabase();
     await closeWhenDone(database, requestValue(database.transaction(storeName, "readwrite").objectStore(storeName).delete(id)));
   },
 
   /** PHASE LIC-3: حراسة الكتابة — مسح كل تسليمات المدير (كانت غائبة). */
   async clearAll() {
-    await assertWriteAllowed("director");
+    await assertDirectorWriteAllowed();
     const database = await openDatabase();
     await closeWhenDone(database, requestValue(database.transaction(storeName, "readwrite").objectStore(storeName).clear()));
   },
@@ -221,7 +251,7 @@ export const directorStore = {
    * قبل الرفض المحتمل.
    */
   async restoreBackup(records: DirectorBackupSubmission[]) {
-    await assertWriteAllowed("director");
+    await assertDirectorWriteAllowed();
     const database = await openDatabase();
     await new Promise<void>((resolve, reject) => {
       const transaction = database.transaction(storeName, "readwrite");

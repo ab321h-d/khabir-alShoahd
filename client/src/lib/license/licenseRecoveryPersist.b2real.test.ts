@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
 import "fake-indexeddb/auto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// PHASE PILOT-50-D: هذه الاختبارات تفحص سلوك public-trial تحديدًا (بدء trial تلقائي)
+vi.mock("../distributionMode", () => ({ DISTRIBUTION_MODE: "public-trial" }));
 import type { SignedEntitlementPayload } from "./licenseTypes";
 
 if (typeof window !== "undefined" && !window.indexedDB) {
@@ -101,11 +104,13 @@ describe("LIC-6D-B-3B.3-B2-REAL: persistRecoveredSignedEntitlement", () => {
     expect(status.kind).toBe("trial_expired");
   });
 
-  it("4) tampered code -> rejected, no persistence", async () => {
+  it("4) [PILOT-50-B: تطور عقد] tampered code -> rejected, لكن reproof يبدأ trial جديدة عبر Blocker 1 (لا null دائم)", async () => {
     const code = await buildCode(activeTrial, wrongKeyPair.privateKey);
     const result = await persistRecoveredSignedEntitlement(code, "teacher");
     expect(result.status).toBe("invalid");
-    expect(await licenseStore.readCurrentState("teacher")).toBeNull();
+    const after = await licenseStore.readCurrentState("teacher");
+    expect(after).not.toBeNull();
+    expect((after as { kind: string }).kind).toBe("trial");
   });
 
   it("5) malformed code -> rejected", async () => {
@@ -126,11 +131,12 @@ describe("LIC-6D-B-3B.3-B2-REAL: persistRecoveredSignedEntitlement", () => {
     expect(result.status).toBe("wrong_scope");
   });
 
-  it("8) فشل الاسترداد لا يُنشئ trial محلية أبدًا", async () => {
+  it("8) [PILOT-50-B: تطور عقد] فشل الاسترداد اليدوي لا يمنع بدء trial تلقائية عبر Blocker 1", async () => {
     await persistRecoveredSignedEntitlement("garbage", "teacher");
     const status = await getCurrentLicenseStatus("teacher");
-    expect(status.kind).toBe("missing");
-    expect(await licenseStore.readCurrentState("teacher")).toBeNull();
+    expect(status.kind).toBe("trial_active");
+    const raw = await licenseStore.readCurrentState("teacher");
+    expect((raw as { kind: string }).kind).toBe("trial");
   });
 
   it("9) استرداد منتهٍ لا يُنشئ/يُمدِّد trial أبدًا", async () => {
@@ -219,27 +225,33 @@ describe("LIC-6D-B-3B.3-B2-REAL: persistRecoveredSignedEntitlement", () => {
     await promise;
   });
 
-  it("18) reproof بعد استرداد يُصفِّر أي true قديم عالق (محاكاة cross-tab)", async () => {
+  it("18) [PILOT-50-B: تطور عقد] reproof بعد حذف القاعدة بالكامل يبدأ trial جديدة عبر Blocker 1 (لا false دائم)، صفر true عالق من الحالة السابقة تحديدًا", async () => {
     const paidCode = await buildCode(activePaid, testKeyPair.privateKey);
     await persistRecoveredSignedEntitlement(paidCode, "teacher");
     expect(isWriteAllowedSync("teacher")).toBe(true);
+    const rawBefore = await licenseStore.readCurrentState("teacher");
     await resetDatabase();
     await getCurrentLicenseStatus("teacher");
-    expect(isWriteAllowedSync("teacher")).toBe(false);
+    expect(isWriteAllowedSync("teacher")).toBe(true); // true جديد شرعي (trial جديدة)، لا "عالق" من paidCode المحذوفة
+    const rawAfter = await licenseStore.readCurrentState("teacher");
+    expect((rawAfter as { kind: string }).kind).toBe("trial");
+    expect(rawAfter).not.toEqual(rawBefore); // صفر بقايا من الحالة السابقة المحذوفة
   });
 
-  it("19) B1 محفوظة: قاعدة فارغة تبقى missing بلا أي استدعاء استرداد", async () => {
+  it("19) [PILOT-50-B: تطور عقد] Blocker 1 محفوظة: قاعدة فارغة تبدأ trial تلقائيًا بلا أي استدعاء استرداد يدوي", async () => {
     const status = await getCurrentLicenseStatus("teacher");
-    expect(status.kind).toBe("missing");
-    expect(await licenseStore.readCurrentState("teacher")).toBeNull();
+    expect(status.kind).toBe("trial_active");
+    const raw = await licenseStore.readCurrentState("teacher");
+    expect((raw as { kind: string }).kind).toBe("trial");
   });
 
-  it("20) enrollSignedEntitlement العادية لا تزال ترفض كودًا منتهيًا (صفر إضعاف)", async () => {
+  it("20) [PILOT-50-B: تطور عقد] enrollSignedEntitlement العادية لا تزال ترفض كودًا منتهيًا (صفر إضعاف على منطق الرفض نفسه)، لكن reproof يبدأ trial عبر Blocker 1", async () => {
     const expiredPayload = { ...activeTrial, expiresAt: past };
     const code = await buildCode(expiredPayload, testKeyPair.privateKey);
     const result = await enrollSignedEntitlement(code, "teacher");
-    expect(result.status).toBe("expired");
-    expect(await licenseStore.readCurrentState("teacher")).toBeNull();
+    expect(result.status).toBe("expired"); // منطق الرفض نفسه بلا أي إضعاف
+    const after = await licenseStore.readCurrentState("teacher");
+    expect((after as { kind: string }).kind).toBe("trial"); // trial جديدة، لا الكود المنتهي المرفوض
   });
 
   it("21) مصفوفة استبدال enrollment العادية سليمة (صفر إضعاف)", async () => {
@@ -267,8 +279,10 @@ describe("LIC-6D-B-3B.3-B2-REAL: persistRecoveredSignedEntitlement", () => {
     const code = await buildCode(activeTrial, testKeyPair.privateKey);
     await persistRecoveredSignedEntitlement(code, "teacher");
     const directorStatus = await getCurrentLicenseStatus("director");
-    expect(directorStatus.kind).toBe("missing");
-    expect(directorStatus.writesAllowed).toBe(false);
+    // PILOT-50-B: director تبدأ trial جديدة خاصة بها عبر Blocker 1 (لا missing)
+    // — الجوهر (عزل عن خانة teacher) لا يزال قائمًا: صفر تأثر بمحتوى استرداد teacher
+    expect(directorStatus.kind).toBe("trial_active");
+    expect(directorStatus.writesAllowed).toBe(true);
     const teacherStatus = await getCurrentLicenseStatus("teacher");
     expect(teacherStatus.writesAllowed).toBe(true);
   });
@@ -429,7 +443,8 @@ describe("LIC-6D-B-3B.3-B2-REAL: persistRecoveredSignedEntitlement", () => {
     const tamperedCode = `${bytesToBase64Url(payloadBytes)}.${bytesToBase64Url(tamperedSig)}`;
     const result = await persistRecoveredSignedEntitlement(tamperedCode, "teacher");
     expect(result.status).toBe("invalid");
-    expect(await licenseStore.readCurrentState("teacher")).toBeNull();
+    const after = await licenseStore.readCurrentState("teacher");
+    expect((after as { kind: string }).kind).toBe("trial"); // PILOT-50-B: reproof يبدأ trial عبر Blocker 1 بدل null دائم
   });
 
   // ===== TEST COMPLETION: الحالات المطلوبة صراحة (1-6) =====

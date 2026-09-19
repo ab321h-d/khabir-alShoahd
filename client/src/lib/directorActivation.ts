@@ -80,3 +80,50 @@ export const verifyDirectorActivation = async (code: string, scope: { schoolId: 
 
   return { ok: true, payload };
 };
+
+/**
+ * PHASE PILOT-50-F3.4 — للاستخدام في تدفق ترقية DirectorTrial فقط: تحقق
+ * كامل **بلا** مطابقة scope مُسبَقة (صفر افتراض بأن trial.schoolId مصدر
+ * ثقة — هو بيانات تجربة غير مُتحقَّق منها أصلًا). كل الفحوصات الأخرى
+ * (توقيع/شكل/دور/انتهاء/استهلاك) مطابقة تمامًا لـverifyDirectorActivation
+ * أعلاه — **صفر تعديل على تلك الدالة القديمة، صفر لمس لدلالات التحقق
+ * التشفيري نفسها**. التطابق مع trial.schoolId (إن وُجد) يحدث لاحقًا، خارج
+ * هذه الدالة، كقرار منفصل تمامًا (انظر §M في التدقيق — صفر إضافة صامتة).
+ */
+export const verifyDirectorActivationCredential = async (code: string): Promise<VerifyActivationResult> => {
+  if (!DIRECTOR_ACTIVATION_PUBLIC_KEY_JWK) return { ok: false, error: "no_public_key" };
+
+  const signatureResult = await verifyActivationSignature(code, DIRECTOR_ACTIVATION_PUBLIC_KEY_JWK);
+  if (!signatureResult.ok) return { ok: false, error: signatureResult.error };
+
+  let parsedPayload: unknown;
+  try {
+    parsedPayload = JSON.parse(signatureResult.payloadText);
+  } catch {
+    return { ok: false, error: "invalid_payload" };
+  }
+
+  if (typeof parsedPayload === "object" && parsedPayload !== null && "version" in parsedPayload && (parsedPayload as { version: unknown }).version !== 1) {
+    return { ok: false, error: "unknown_version" };
+  }
+  if (!isActivationPayloadShape(parsedPayload)) return { ok: false, error: "invalid_payload" };
+  const payload = parsedPayload;
+
+  if (payload.role !== "director") return { ok: false, error: "wrong_role" };
+  if (new Date(payload.expiresAt).getTime() <= Date.now()) return { ok: false, error: "expired" };
+
+  const consumed = await identityStore.isActivationConsumed(payload.activationId);
+  if (consumed) return { ok: false, error: "already_consumed" };
+
+  return { ok: true, payload };
+};
+
+/**
+ * PHASE PILOT-50-F3.4 — تطبيع post-verification بحت. يُستدعى **فقط بعد**
+ * نجاح verifyDirectorActivationCredential أعلاه — صفر تعديل على البايتات
+ * الموقَّعة أو منطق التحقق نفسه. v1 (schoolId+stage مفردان) → تمثيل داخلي
+ * موحَّد schools[] (أساس v2 المستقبلية، بلا الحاجة لمفتاح توقيع جديد).
+ */
+export const normalizeActivationPayloadToSchools = (payload: DirectorActivationPayload): Array<{ schoolId: string; stage: SchoolStage }> => [
+  { schoolId: payload.schoolId, stage: payload.stage },
+];

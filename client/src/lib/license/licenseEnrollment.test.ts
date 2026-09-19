@@ -1,5 +1,8 @@
 import "fake-indexeddb/auto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// PHASE PILOT-50-D: هذه الاختبارات تفحص سلوك public-trial تحديدًا (بدء trial تلقائي)
+vi.mock("../distributionMode", () => ({ DISTRIBUTION_MODE: "public-trial" }));
 import type { SignedEntitlementPayload } from "./licenseTypes";
 
 (globalThis as unknown as { window: { indexedDB: IDBFactory } }).window = { indexedDB: globalThis.indexedDB };
@@ -87,19 +90,21 @@ describe("licenseEnrollment — LIC-6C.1", () => {
     expect((await readRaw()).signedCode).toBe(oldCode);
   });
 
-  it("4) malformed code rejected — no prior state -> cache restoration via central path now yields missing (no fresh trial written), matching LIC-6D-B-3B.3-B1 contract", async () => {
+  it("4) [PILOT-50-B: تطور عقد] malformed code rejected — no prior state -> central reproof path now starts a fresh trial via Blocker 1 (was: stayed missing under old B1)", async () => {
     const result = await enrollSignedEntitlement("not-even-two-parts", "teacher");
     expect(result.status).toBe("invalid");
     const after = await licenseStore.readCurrentState("teacher");
-    expect(after).toBeNull(); // PHASE B1: صفر trial تُكتَب في القاعدة عند غياب حالة سابقة
+    expect(after).not.toBeNull();
+    expect((after as { kind: string }).kind).toBe("trial"); // PILOT-50-B Blocker1: بداية trial تلقائية، لا missing دائم
   });
 
-  it("5) expired trial rejected — no prior state -> restoration yields missing (no fresh trial), matching LIC-6D-B-3B.3-B1 contract", async () => {
+  it("5) [PILOT-50-B: تطور عقد] expired trial rejected — no prior state -> reproof starts a fresh trial (Blocker 1), not missing", async () => {
     const code = await buildCode({ ...trial, expiresAt: past }, testKeyPair.privateKey);
     const result = await enrollSignedEntitlement(code, "teacher");
     expect(result.status).toBe("expired");
     const after = await licenseStore.readCurrentState("teacher");
-    expect(after).toBeNull();
+    expect(after).not.toBeNull();
+    expect((after as { kind: string }).kind).toBe("trial");
   });
 
   it("6) expired paid rejected", async () => {
@@ -340,14 +345,16 @@ describe("licenseEnrollment — LIC-6C.1", () => {
     expect(isWriteAllowedSync("teacher")).toBe(true);
   });
 
-  it("FIX-2B) existing valid paid (خانة teacher) + wrong-scope code لـdirector -> رُفِض، خانة director تبقى missing كما كانت (لم تُلمَس)", async () => {
+  it("FIX-2B) [PILOT-50-B: تطور عقد] existing valid paid (خانة teacher) + wrong-scope code لـdirector -> رُفِض، خانة director تبدأ trial جديدة عبر Blocker 1 (لا تبقى missing)، خانة teacher الأصلية سليمة تمامًا", async () => {
     const existingCode = await buildCode({ ...trial, kind: "paid" }, testKeyPair.privateKey);
     await seedRaw({ kind: "entitlement", signedCode: existingCode, lastSeenAt: "2026-09-09T00:00:00.000Z" }, "teacher");
     const wrongScopeCode = await buildCode({ ...trial, entitlementId: "e2", scope: "teacher" }, testKeyPair.privateKey);
     const result = await enrollSignedEntitlement(wrongScopeCode, "director");
     expect(result.status).toBe("wrong_scope");
-    // خانة director لم تُلمَس إطلاقًا (كانت missing أصلًا، لا علاقة لها بخانة teacher المنفصلة)
-    expect(isWriteAllowedSync("director")).toBe(false);
+    // خانة director لم تكن موجودة أصلًا -> بدأت trial جديدة عبر Blocker 1 (PILOT-50-B)، صفر علاقة بخانة teacher المنفصلة
+    expect(isWriteAllowedSync("director")).toBe(true);
+    const directorRaw = await readRaw("director");
+    expect((directorRaw as { kind: string }).kind).toBe("trial");
     // خانة teacher الأصلية سليمة تمامًا كما كانت
     expect((await readRaw("teacher")).signedCode).toBe(existingCode);
   });

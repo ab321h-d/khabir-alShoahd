@@ -15,7 +15,7 @@ const testKeys = await (async () => {
 
 vi.mock("./teacherActivationConfig", () => ({ TEACHER_ACTIVATION_PUBLIC_KEY_JWK: testKeys.publicJwk }));
 
-const { verifyTeacherActivation } = await import("./teacherActivation");
+const { verifyTeacherActivation, peekActivationScope } = await import("./teacherActivation");
 const { identityStore } = await import("./identityStore");
 
 const toBase64Url = (bytes: Uint8Array): string =>
@@ -95,5 +95,36 @@ describe("verifyTeacherActivation — تحقق كامل لبيانات اعتم�
     const second = await verifyTeacherActivation(code, scope);
     expect(second.ok).toBe(false);
     if (!second.ok) expect(second.error).toBe("already_consumed");
+  });
+});
+
+describe("PILOT-50-D2: peekActivationScope — استخراج schoolId/stage الحقيقيَّين من الاعتماد نفسه", () => {
+  it("يستخرج schoolId/stage الحقيقيَّين من بيانات اعتماد موقَّعة فعليًا (لا قيمة مُختلَقة)", async () => {
+    const code = await sign({ ...basePayload, activationId: "act-peek-001", schoolId: "1450", stage: "elementary" }, testKeys.privateKey);
+    const result = peekActivationScope(code);
+    expect(result).toEqual({ schoolId: "1450", stage: "elementary" });
+  });
+
+  it("القيمة المُستخلَصة تُطابِق ما تتحقق منه verifyTeacherActivation الحقيقية لاحقًا (سلسلة الثقة الكاملة)", async () => {
+    const code = await sign({ ...basePayload, activationId: "act-peek-002", schoolId: "1450", stage: "secondary" }, testKeys.privateKey);
+    const peeked = peekActivationScope(code);
+    expect(peeked).not.toBeNull();
+    const verified = await verifyTeacherActivation(code, peeked!);
+    expect(verified.ok).toBe(true);
+    if (verified.ok) expect(verified.payload.schoolId).toBe("1450");
+  });
+
+  it("كود مُشوَّه بالكامل -> null، صفر استخراج", () => {
+    expect(peekActivationScope("not-even-base64.garbage")).toBeNull();
+  });
+
+  it("توقيع مُزوَّر (بمفتاح خاطئ) لا يمنع الاستخراج المعلوماتي البحت — لكن verifyTeacherActivation اللاحقة سترفضه فعليًا", async () => {
+    const wrongKeys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+    const forgedCode = await sign({ ...basePayload, activationId: "act-peek-forged", schoolId: "9999" }, wrongKeys.privateKey);
+    const peeked = peekActivationScope(forgedCode); // الاستخراج نفسه بلا تحقق توقيع، ينجح شكليًا
+    expect(peeked).toEqual({ schoolId: "9999", stage: "middle" });
+    const verified = await verifyTeacherActivation(forgedCode, peeked!); // لكن التحقق الحقيقي يرفض التوقيع المزوَّر رياضيًا
+    expect(verified.ok).toBe(false);
+    if (!verified.ok) expect(verified.error).toBe("invalid_signature");
   });
 });

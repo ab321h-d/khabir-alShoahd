@@ -9,8 +9,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  */
 vi.mock("./license/licenseGuard", () => ({ assertWriteAllowed: vi.fn(async () => {}) }));
 
+// PHASE PILOT-50-F3.4: assertDirectorWriteAllowed لم تعد تعتمد على
+// license/licenseGuard.ts أعلاه — الموك يبقى بلا ضرر (غير مُستدعًى)، جلسة
+// مدير trial حقيقية تُضاف في beforeEach أدناه بدلًا منه.
 const { validateTeacherIdentityMetadata, resolveStableTeacherIdentity } = await import("./teacherIdentityImport");
 const { directorStore } = await import("./directorStore");
+const { __setAuthenticatedDirectorTrialForTests } = await import("./directorAuth");
 
 const validIdentity = {
   schemaVersion: 1 as const,
@@ -77,7 +81,11 @@ const resetDirectorDatabase = () => new Promise<void>((resolve) => {
   request.onblocked = () => resolve();
 });
 
-beforeEach(async () => { await resetDirectorDatabase(); });
+beforeEach(async () => {
+  await resetDirectorDatabase();
+  await new Promise<void>((resolve) => { const r = indexedDB.deleteDatabase("khabir-identity-local"); r.onsuccess = () => resolve(); r.onerror = () => resolve(); r.onblocked = () => resolve(); });
+  await __setAuthenticatedDirectorTrialForTests("director-test-user", "test-school-id");
+});
 
 describe("Director import/storage — teacherIdentity عبر resolveStableTeacherIdentity + directorStore.save الفعليتين", () => {
   it("8) ZIP جديد + identity صالحة + completeness متطابقة -> teacherId ثابت يُخزَّن", async () => {

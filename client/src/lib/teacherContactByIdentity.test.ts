@@ -5,10 +5,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * PHASE ID-3E: اختبارات إنتاجية حقيقية على directorStore.save/
  * getTeacherContactByIdentity/upsertTeacherContactByIdentity/
  * getTeacherContact/upsertTeacherContact الفعلية نفسها.
+ *
+ * PHASE PILOT-50-F3.4: directorStore.assertDirectorWriteAllowed لم تعد
+ * تعتمد على license/licenseGuard.ts — الموك القديم لم يعد ذا صلة، استُبدِل
+ * بجلسة مدير trial حقيقية مُصادَق عليها فعليًا.
  */
-vi.mock("./license/licenseGuard", () => ({ assertWriteAllowed: vi.fn(async () => {}) }));
 
 const { directorStore, normalizeTeacherName } = await import("./directorStore");
+const { __setAuthenticatedDirectorTrialForTests } = await import("./directorAuth");
 
 const identityFor = (teacherId: string, displayName = "معلم") => ({
   schemaVersion: 1 as const, exportId: "export-1", teacherId, schoolId: "2002", stage: "middle" as const,
@@ -16,11 +20,14 @@ const identityFor = (teacherId: string, displayName = "معلم") => ({
 });
 const completeness = { schemaVersion: 1 as const, exportId: "export-1", generatedAt: "2026-09-09T00:00:00.000Z", performanceAreas: [], totals: { areasCount: 0, completeCount: 0, needsReviewCount: 0, incompleteCount: 0 } };
 
-const resetDatabase = () => new Promise<void>((resolve) => {
-  const request = indexedDB.deleteDatabase("khabir-director-local");
+const resetDatabase = () => Promise.all(["khabir-director-local", "khabir-identity-local"].map((name) => new Promise<void>((resolve) => {
+  const request = indexedDB.deleteDatabase(name);
   request.onsuccess = () => resolve(); request.onerror = () => resolve(); request.onblocked = () => resolve();
+})));
+beforeEach(async () => {
+  await resetDatabase();
+  await __setAuthenticatedDirectorTrialForTests("director-test-user", "test-school-id");
 });
-beforeEach(async () => { await resetDatabase(); });
 
 describe("ID-3E — جهة اتصال بهوية ثابتة (teacherId) بلا تصادم اسم", () => {
   it("1-2) معلمان بنفس teacherName، teacherId مختلف -> كل واحد يقرأ رقمه فقط، تحديث أحدهما لا يمس الآخر", async () => {

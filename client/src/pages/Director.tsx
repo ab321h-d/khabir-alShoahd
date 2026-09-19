@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, BarChart3, Check, Clipboard, Download, FileSpreadsheet, FileText, FolderOpen, LayoutDashboard, LockKeyhole, MessageCircle, PenLine, Printer, Search, Send, Sparkles, Star, Trash2, Upload, UserRound, X } from "lucide-react";
 import { directorStore, normalizeTeacherName, type AcademicTerm, type DirectorSubmission, type ReviewLevel, type ReviewStatus } from "@/lib/directorStore";
 import { useDirectorAuth } from "@/components/DirectorAuthGate";
-import { resolveStableTeacherIdentity, validateTeacherIdentityMetadata } from "@/lib/teacherIdentityImport";
+import { resolveStableTeacherIdentity, resolveSenderTrust, validateTeacherIdentityMetadata } from "@/lib/teacherIdentityImport";
+import { directorTrustRegistry } from "@/lib/directorTrustRegistry";
+import { performTrustedImportSave } from "@/lib/directorImportOrchestration";
 import { validateCompletenessMetadata, type CompletenessStatus } from "@/lib/completenessCheck";
 import { buildReportFilterDescription, filterReportRows, hasInvalidDateRange, type ReportScope } from "@/lib/reportFilters";
 import { escapeHtml } from "@/lib/sanitize";
@@ -115,7 +117,7 @@ const buildAggregateReportPdf = async (items: DirectorSubmission[], stats: Aggre
 };
 
 export default function Director() {
-  const { lock } = useDirectorAuth();
+  const { lock, session, requestActivation } = useDirectorAuth();
   const inputRef = useRef<HTMLInputElement>(null);
   const [submissions, setSubmissions] = useState<DirectorSubmission[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -226,6 +228,9 @@ export default function Director() {
       let pdfFile = file;
       let completenessMetadata: DirectorSubmission["completenessMetadata"] = null;
       let teacherIdentity: Parameters<typeof directorStore.save>[4] = null;
+      // PHASE PILOT-50-F3.1: exportId المُرشَّح فقط — فحص/تسجيل "مُشاهَد"
+      // يحدث حصرًا داخل performTrustedImportSave أدناه، بالترتيب الصحيح.
+      let candidateExportId: string | null = null;
 
       if (isZipPackage) {
         const { unzipSync } = await import("fflate");
@@ -264,9 +269,91 @@ export default function Director() {
             teacherIdentity = null;
           }
         }
+
+        // PHASE PILOT-50-F: التحقق التشفيري الكامل عبر manifest.json الموقَّع
+        // — السلطة الوحيدة الآن لهوية المُرسِل التشفيرية. identity.json
+        // أعلاه تبقى للتوافق الخلفي فقط، صفر منح ثقة منها بعد الآن.
+        const manifestBytes = unzipped["manifest.json"];
+        const signatureBytes = unzipped["signature.txt"];
+        if (manifestBytes && signatureBytes && metadataBytes) {
+          let manifestRaw: unknown = null;
+          try { manifestRaw = JSON.parse(new TextDecoder().decode(manifestBytes)); } catch { manifestRaw = null; }
+          const signature = new TextDecoder().decode(signatureBytes);
+
+          const trustResult = await resolveSenderTrust({
+            manifestRaw,
+            signature,
+            pdfBytes,
+            completenessJsonBytes: metadataBytes,
+          });
+
+          if (trustResult.status === "cryptographic_verification_failed") {
+            showToast(`تعذر التحقق من هوية المُرسِل تشفيريًا (${trustResult.reason}) — سيُستورَد الملف بلا هوية موثوقة`);
+          } else if (trustResult.status === "new_sender") {
+            const approved = window.confirm(
+              `مُرسِل جديد غير معروف مسبقًا: "${trustResult.manifest.displayName}".\nهل تريد اعتماد هذا المُرسِل؟`,
+            );
+            if (approved) {
+              await directorTrustRegistry.approveSender({
+                fingerprint: trustResult.manifest.senderFingerprint,
+                publicKeyJwk: trustResult.manifest.senderPublicKeyJwk,
+                approvedDisplayName: trustResult.manifest.displayName,
+                approvedStage: trustResult.manifest.stage,
+              });
+              showToast("تم اعتماد المُرسِل بنجاح");
+            } else {
+              showToast("لم يُعتمَد المُرسِل — استمر الاستيراد بلا هوية موثوقة");
+            }
+          } else if (trustResult.status === "name_conflict_different_sender") {
+            const approved = window.confirm(
+              `⚠️ يوجد معلم معتمد بهذا الاسم ("${trustResult.manifest.displayName}")، لكن هذه الحزمة صادرة من هوية مختلفة تمامًا.\n` +
+              `الهوية المعتمَدة سابقًا تبقى محفوظة بلا تغيير.\nهل تريد اعتماد هذه الهوية الجديدة أيضًا؟`,
+            );
+            if (approved) {
+              await directorTrustRegistry.approveSender({
+                fingerprint: trustResult.manifest.senderFingerprint,
+                publicKeyJwk: trustResult.manifest.senderPublicKeyJwk,
+                approvedDisplayName: trustResult.manifest.displayName,
+                approvedStage: trustResult.manifest.stage,
+              });
+              showToast("تم اعتماد الهوية الجديدة — الهوية السابقة بقيت محفوظة كما هي");
+            } else {
+              showToast("لم تُعتمَد الهوية الجديدة — الاستيراد سيستمر بلا هوية موثوقة");
+            }
+          }
+          // "trusted": صفر تدخُّل مطلوب، touchLastSeen حدث داخل resolveSenderTrust نفسها
+
+          // PHASE PILOT-50-F3.1: صفر فحص/تسجيل لـexportId هنا إطلاقًا الآن —
+          // فقط تسجيل المُرشَّح؛ القرار الفعلي (rejected_replay أم لا) يحدث
+          // حصرًا داخل performTrustedImportSave أدناه، بترتيب صحيح يمنع
+          // الحفظ فعليًا عند إعادة الإرسال، لا مجرد تحذير ثم استمرار (الخلل
+          // المُصحَّح هنا بالضبط).
+          if (trustResult.status !== "cryptographic_verification_failed" && trustResult.status !== "legacy_unverified") {
+            candidateExportId = trustResult.manifest.exportId;
+          }
+        }
       }
 
-      const submission = await directorStore.save(pdfFile, teacherName, importAcademicTerm, completenessMetadata, teacherIdentity);
+      const outcome = await performTrustedImportSave({
+        exportId: candidateExportId,
+        // PHASE PILOT-50-F3.2: مصدر الحقيقة الموثوق الآن هو directorStore
+        // نفسها (نفس القاعدة التي ستكتب السجل)، لا سجل الثقة المنفصل.
+        findExistingSubmissionByExportId: (id) => directorStore.findByExportId(id),
+        markExportIdSeen: (id) => directorTrustRegistry.markExportIdSeen(id),
+        save: () => directorStore.save(pdfFile, teacherName, importAcademicTerm, completenessMetadata, teacherIdentity, candidateExportId),
+      });
+
+      if (outcome.status === "rejected_replay") {
+        // PHASE PILOT-50-F3.1: صفر استدعاء لـdirectorStore.save حدث هنا
+        // إطلاقًا — الحفظ مُوقَف فعليًا قبل أي محاولة، لا بعدها.
+        showToast("هذه الحزمة سبق استيرادها بنجاح من قبل — لن تُحفَظ مرة أخرى");
+        return;
+      }
+      if (outcome.status === "save_failed") {
+        throw outcome.error; // يُعالَج بواسطة catch الخارجية أدناه (تسجيل + رسالة موحَّدة)
+      }
+
+      const submission = outcome.submission;
       await refresh();
       setSelectedId(submission.id);
       setImportOpen(false);
@@ -274,7 +361,14 @@ export default function Director() {
       setTeacherName("");
       setImportAcademicTerm("");
       showToast("حُفظ الملف على جهاز المدير فقط");
-    } catch { showToast("تعذر حفظ الملف محليًا"); }
+    } catch (error) {
+      // PHASE PILOT-50-F3-FIX: تسجيل تشخيصي فعلي — صفر بلع صامت للاستثناء.
+      // صفر تسريب لأي سر (مفتاح خاص، PIN، بيانات اعتماد تفعيل) — error هنا
+      // نصوص أخطاء تطبيقية عادية فقط (فشل IndexedDB، فشل ترخيص سابق، إلخ)،
+      // بلا أي محتوى حساس بطبيعته في هذا المسار.
+      console.error("importPdf: فشل حفظ الملف محليًا", error);
+      showToast("تعذر حفظ الملف محليًا");
+    }
     finally { setWorking(false); }
   };
 
@@ -402,6 +496,12 @@ export default function Director() {
   };
 
   return <main className="director-app" dir="rtl">
+    {session.authorizationKind === "trial" && (
+      <div className="director-trial-banner" role="status">
+        <span>الفترة التجريبية</span>
+        <button type="button" onClick={requestActivation}>تفعيل خبير المدير</button>
+      </div>
+    )}
     <header className="director-header"><a href="/" aria-label={isDirectorStandalone ? "الصفحة الرئيسية لتطبيق المدير" : "العودة إلى تطبيق المعلم"}><ArrowRight size={20} /></a><div className="director-brand"><img src={brandEmblemUrl} alt="" aria-hidden="true" /><span><strong>خبير الشواهد</strong><small>مساحة المدير</small></span></div><button className="director-collaboration-button" type="button" onClick={() => setCollaborationOpen(true)} aria-label="دعوات التعاون"><UserRound size={16} /> دعوة</button><button className="director-collaboration-button" type="button" onClick={lock} aria-label="قفل حساب المدير"><LockKeyhole size={16} /> قفل الحساب</button></header>
     <section className="director-shell">
       <aside className="director-rail"><div className="director-intro"><span className="director-kicker">مساحة مراجعة هادئة</span><h1>قيّم الإنجاز،<br />بوضوح وبساطة.</h1><p>استورد نسخة PDF التي تصلك من المعلم، ثم سجّل تقييمك. لا تُرفع الملفات أو التعليقات إلى أي خدمة.</p></div><button className="director-import-button" type="button" onClick={() => setImportOpen(true)}><Upload size={19} /> استيراد ملف PDF</button><div className="director-trust"><LockKeyhole size={18} /><span><strong>لا حسابات ولا مزامنة</strong><small>كل ملف وتقييم يبقيان على هذا الجهاز.</small></span></div></aside>

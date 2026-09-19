@@ -21,19 +21,10 @@ const stageOptions: Array<{ value: SchoolStage; label: string }> = [
   { value: "secondary", label: "ثانوي" },
 ];
 
-/** رسالة موجَّهة للمستخدم فقط — لا تفاصيل تقنية، لا crypto، لا stack traces. */
-const humanActivationError = (error: unknown): string => {
-  const message = error instanceof Error ? error.message : "";
-  if (message.includes("no_public_key")) return "التفعيل غير مهيأ في هذه النسخة بعد.";
-  if (message.includes("expired")) return "رمز التفعيل منتهي.";
-  if (message.includes("scope_mismatch")) return "بيانات المدرسة/المرحلة لا تطابق رمز التفعيل.";
-  if (message.includes("already_consumed")) return "رمز التفعيل استُخدم من قبل على هذا الجهاز.";
-  if (message.includes("PIN وتأكيده")) return "PIN وتأكيده غير متطابقين.";
-  if (message.includes("صيغة PIN")) return "صيغة PIN غير صالحة — يجب أن تتكون من 6 أرقام.";
-  return "رمز التفعيل غير صالح.";
-};
+/** رسالة موجَّهة للمستخدم فقط — لا تفاصيل تقنية. */
+const humanOnboardingError = (): string => "تعذر بدء الاستخدام. حاول مرة أخرى.";
 
-// ===== شاشة التفعيل (activation-required) =====
+// ===== شاشة الإعداد الأول (الاسم + المرحلة فقط، PHASE PILOT-50-F) =====
 
 function TeacherActivationScreen({ onSuccess }: { onSuccess: () => void }) {
   const [stage, setStage] = useState<SchoolStage>("elementary");
@@ -52,13 +43,10 @@ function TeacherActivationScreen({ onSuccess }: { onSuccess: () => void }) {
 
     setSubmitting(true);
     try {
-      await setupTeacherOnboarding({
-        stage,
-        displayName: trimmedDisplayName,
-      });
+      await setupTeacherOnboarding({ stage, displayName: trimmedDisplayName });
       onSuccess();
     } catch {
-      setError("تعذر بدء الاستخدام. حاول مرة أخرى.");
+      setError(humanOnboardingError());
     } finally {
       setSubmitting(false);
     }

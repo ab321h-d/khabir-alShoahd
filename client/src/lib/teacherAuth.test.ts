@@ -1,5 +1,5 @@
 import "fake-indexeddb/auto";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
  * بيئة Vitest الافتراضية (Node) لا توفر window/localStorage. teacherAuth.ts
@@ -14,28 +14,15 @@ class MemoryStorage {
   removeItem(key: string) { this.store.delete(key); }
   clear() { this.store.clear(); }
 }
-(globalThis as unknown as { window: { localStorage: MemoryStorage } }).window = { localStorage: new MemoryStorage() };
+(globalThis as unknown as { window: { localStorage: MemoryStorage; indexedDB: IDBFactory } }).window = { localStorage: new MemoryStorage(), indexedDB: globalThis.indexedDB };
 (globalThis as unknown as { localStorage: MemoryStorage }).localStorage = (globalThis as unknown as { window: { localStorage: MemoryStorage } }).window.localStorage;
-const requestTeacherTrialEnrollmentMock = vi.fn(async () => ({
-  accountId: "server-account-001",
-  signedCode: "SIGNED_TEST_ENTITLEMENT",
-}));
 
-const enrollSignedEntitlementMock = vi.fn(async () => ({
-  status: "success" as const,
-}));
-
-vi.mock("./teacherTrialApi", () => ({
-  requestTeacherTrialEnrollment: requestTeacherTrialEnrollmentMock,
-}));
-
-vi.mock("./license/licenseEnrollment", () => ({
-  enrollSignedEntitlement: enrollSignedEntitlementMock,
-}));
-
+// PHASE PILOT-50-F: مسار setupTeacher القديم (legacy، مدرسة+PIN) لا يزال
+// موجودًا ويحتاج activation موقَّعًا حقيقيًا — يبقى مُختبَرًا هنا كما هو،
+// بلا تغيير في منطقه.
 vi.mock("./teacherActivation", () => ({
-  verifyTeacherActivation: vi.fn(async (code: string) => {
-    if (code === "VALID_TEST_ACTIVATION_CODE") {
+  verifyTeacherActivation: vi.fn(async (code: string, scope: { schoolId: string; stage: string }) => {
+    if (code === "VALID_TEST_ACTIVATION_CODE" && scope.schoolId === "2002") {
       return { ok: true, payload: { version: 1, activationId: "test-activation-id-001", schoolId: "2002", stage: "middle", role: "teacher", issuedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3_600_000).toISOString() } };
     }
     return { ok: false, error: "invalid_signature" };
@@ -44,10 +31,12 @@ vi.mock("./teacherActivation", () => ({
 
 const { identityStore } = await import("./identityStore");
 const { resolveDirectorAccess } = await import("./directorAuth");
+const { licenseStore } = await import("./license/licenseStore");
+const { getCurrentLicenseStatus } = await import("./license/licenseGuard");
 const { setupTeacher, setupTeacherOnboarding, verifyTeacherPin, resolveTeacherAccess, lockTeacherSession, getOrCreateTeacherDeviceId } = await import("./teacherAuth");
 
 const resetAllDatabases = () => Promise.all(
-  ["khabir-identity-local", "khabir-teacher-credentials-local", "khabir-director-credentials-local"].map(
+  ["khabir-identity-local", "khabir-teacher-credentials-local", "khabir-director-credentials-local", "khabir-license-local"].map(
     (name) => new Promise<void>((resolve) => {
       const request = indexedDB.deleteDatabase(name);
       request.onsuccess = () => resolve();
@@ -62,16 +51,10 @@ beforeEach(async () => {
   localStorage.clear();
 });
 
-
-describe("setupTeacherOnboarding ? المسار الجديد بدون schoolId/PIN", () => {
-  it("ينشئ هوية teacher بالاسم والمرحلة بدون schoolId", async () => {
-    const session = await setupTeacherOnboarding({
-      stage: "secondary",
-      displayName: "أ. نورة",
-    });
-
+describe("setupTeacherOnboarding — PHASE PILOT-50-F: الاسم + المرحلة فقط، صفر activation credential إطلاقًا", () => {
+  it("ينشئ هوية teacher بالاسم والمرحلة بدون schoolId، بلا أي معامل تفعيل", async () => {
+    const session = await setupTeacherOnboarding({ stage: "secondary", displayName: "أ. نورة" });
     const identity = await identityStore.getIdentityById(session.userId);
-
     expect(identity).not.toBeNull();
     expect(identity?.role).toBe("teacher");
     expect(identity?.stage).toBe("secondary");
@@ -80,17 +63,18 @@ describe("setupTeacherOnboarding ? المسار الجديد بدون schoolId/P
     expect("schoolId" in session).toBe(false);
   });
 
+  it("يبدأ تجربة 3 أشهر محليًا فعليًا فورًا، دائمًا (بلا شرط أي وضع توزيع)", async () => {
+    await setupTeacherOnboarding({ stage: "middle", displayName: "معلم" });
+    const status = await getCurrentLicenseStatus("teacher");
+    expect(status.kind).toBe("trial_active");
+    expect(status.writesAllowed).toBe(true);
+  });
+
   it("يسجل الجهاز ويعيد authenticated مباشرة", async () => {
-    const session = await setupTeacherOnboarding({
-      stage: "middle",
-      displayName: "معلم",
-    });
-
+    const session = await setupTeacherOnboarding({ stage: "middle", displayName: "معلم" });
     expect(session.deviceId).toBe(getOrCreateTeacherDeviceId());
-
     const access = await resolveTeacherAccess();
     expect(access.status).toBe("authenticated");
-
     if (access.status === "authenticated") {
       expect(access.session.userId).toBe(session.userId);
       expect(access.session.deviceId).toBe(session.deviceId);
@@ -98,69 +82,27 @@ describe("setupTeacherOnboarding ? المسار الجديد بدون schoolId/P
   });
 
   it("بعد lock تعود هوية onboarding على الجهاز الموثوق بدون PIN", async () => {
-    const session = await setupTeacherOnboarding({
-      stage: "elementary",
-      displayName: "معلم",
-    });
-
+    const session = await setupTeacherOnboarding({ stage: "elementary", displayName: "معلم" });
     lockTeacherSession();
-
     const access = await resolveTeacherAccess();
-
     expect(access.status).toBe("authenticated");
-
     if (access.status === "authenticated") {
       expect(access.session.userId).toBe(session.userId);
       expect("schoolId" in access.session).toBe(false);
     }
   });
-  it("does not create local identity when server enrollment fails", async () => {
-    requestTeacherTrialEnrollmentMock.mockRejectedValueOnce(new Error("network_error"));
-    const createIdentitySpy = vi.spyOn(identityStore, "createTeacherOnboardingIdentity");
-    const deviceId = getOrCreateTeacherDeviceId();
 
-    await expect(setupTeacherOnboarding({
-      stage: "secondary",
-      displayName: "Teacher",
-    })).rejects.toThrow("network_error");
-
-    expect(createIdentitySpy).not.toHaveBeenCalled();
-    expect(await identityStore.getTrustedDevice(deviceId)).toBeNull();
-    createIdentitySpy.mockRestore();
+  it("استدعاءان متتاليان لا ينشئان trial جديدة في كل مرة (idempotent)", async () => {
+    await setupTeacherOnboarding({ stage: "middle", displayName: "معلم 1" });
+    const firstRaw = await licenseStore.readCurrentState("teacher");
+    // محاكاة إعادة فتح: getCurrentLicenseStatus فقط، بلا onboarding ثانية
+    await getCurrentLicenseStatus("teacher");
+    const secondRaw = await licenseStore.readCurrentState("teacher");
+    expect((secondRaw as { trialStartedAt: string }).trialStartedAt).toBe((firstRaw as { trialStartedAt: string }).trialStartedAt);
   });
-
-  it("does not create local identity when signed entitlement is rejected", async () => {
-    enrollSignedEntitlementMock.mockResolvedValueOnce({ status: "invalid" });
-    const createIdentitySpy = vi.spyOn(identityStore, "createTeacherOnboardingIdentity");
-    const deviceId = getOrCreateTeacherDeviceId();
-
-    await expect(setupTeacherOnboarding({
-      stage: "secondary",
-      displayName: "Teacher",
-    })).rejects.toThrow("teacher_trial_entitlement_invalid");
-
-    expect(createIdentitySpy).not.toHaveBeenCalled();
-    expect(await identityStore.getTrustedDevice(deviceId)).toBeNull();
-    createIdentitySpy.mockRestore();
-  });
-
-  it("keeps server accountId separate from local userId", async () => {
-    const session = await setupTeacherOnboarding({
-      stage: "secondary",
-      displayName: "Teacher",
-    });
-
-    expect(requestTeacherTrialEnrollmentMock).toHaveBeenCalledWith(session.deviceId);
-    expect(enrollSignedEntitlementMock).toHaveBeenCalledWith(
-      "SIGNED_TEST_ENTITLEMENT",
-      "teacher",
-    );
-    expect(session.userId).not.toBe("server-account-001");
-  });
-
 });
 
-describe("setupTeacher — الإعداد الأول بعد تفعيل صالح", () => {
+describe("setupTeacher — الإعداد الأول بعد تفعيل صالح (مسار المدرسة القديم legacy، بلا تغيير)", () => {
   it("ينشئ هوية معلم بـ role=\"teacher\"", async () => {
     const session = await setupTeacher({ activationCredential: "VALID_TEST_ACTIVATION_CODE", schoolId: "2002", stage: "middle", displayName: "أ. نورة القحطاني", pin: "246810", confirmPin: "246810" });
     const identity = await identityStore.getIdentityById(session.userId);
@@ -185,7 +127,7 @@ describe("setupTeacher — الإعداد الأول بعد تفعيل صالح"
   });
 });
 
-describe("verifyTeacherPin — تحقق PIN بعد التفعيل", () => {
+describe("verifyTeacherPin — تحقق PIN بعد التفعيل (مسار legacy)", () => {
   it("PIN الصحيح ينجح ويُعيد جلسة", async () => {
     const session = await setupTeacher({ activationCredential: "VALID_TEST_ACTIVATION_CODE", schoolId: "2002", stage: "middle", displayName: "معلم", pin: "246810", confirmPin: "246810" });
     lockTeacherSession();
@@ -214,7 +156,7 @@ describe("verifyTeacherPin — تحقق PIN بعد التفعيل", () => {
   });
 });
 
-describe("resolveTeacherAccess — جهاز موثوق واستعادة الجلسة", () => {
+describe("resolveTeacherAccess — جهاز موثوق واستعادة الجلسة (مسار legacy)", () => {
   it("جهاز جديد بلا تفعيل سابق = activation-required", async () => {
     const access = await resolveTeacherAccess();
     expect(access.status).toBe("activation-required");

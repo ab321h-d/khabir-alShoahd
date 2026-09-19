@@ -11,6 +11,10 @@ import { TeacherAuthGate, useTeacherIdentity } from "./TeacherAuthGate";
  * (25/25 PASS) — هذا الملف يختبر الرسم والتفاعل فقط.
  */
 
+// PHASE PILOT-50-D: هذا الملف يختبر الرسم/التفاعل العام (public-trial) —
+// صفر حقل تفعيل Pilot متوقَّع في هذه الاختبارات
+vi.mock("@/lib/distributionMode", () => ({ DISTRIBUTION_MODE: "public-trial" }));
+
 const resolveTeacherAccessMock = vi.fn();
 const setupTeacherOnboardingMock = vi.fn();
 const verifyTeacherPinMock = vi.fn();

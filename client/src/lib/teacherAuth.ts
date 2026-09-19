@@ -15,8 +15,7 @@
 import { identityStore, type SchoolStage, type StoredIdentity, type UserIdentity } from "./identityStore";
 import { derivePinCredential, isValidPinFormat, verifyPinCredential } from "./pinCrypto";
 import { verifyTeacherActivation } from "./teacherActivation";
-import { requestTeacherTrialEnrollment } from "./teacherTrialApi";
-import { enrollSignedEntitlement } from "./license/licenseEnrollment";
+import { licenseStore } from "./license/licenseStore";
 
 export type TeacherSession =
   | {
@@ -151,20 +150,18 @@ export const resolveTeacherAccess = async (): Promise<TeacherAccessState> => {
 };
 
 /**
- * إنشاء هوية معلم لأول مرة على هذا التثبيت — تتطلب صراحة activationCredential
- * صالحًا (يُتحقَّق منه أولًا، قبل أي كتابة). teacherId = UserIdentity.userId
- * الناتج، وليس activationId (معرّف الدعوة نفسها، يُستهلَك مرة واحدة فقط ولا
- * يُستخدَم كهوية دائمة).
+ * إنشاء هوية معلم لأول مرة على هذا التثبيت — بلا PIN، بلا activation
+ * credential، بلا schoolId إطلاقًا. PHASE PILOT-50-F: اشتراط activation
+ * في controlled-pilot أُزيل من مسار onboarding الحالي بالكامل — الاسم +
+ * المرحلة يبدآن التجربة المحلية مباشرة، دائمًا، بصرف النظر عن
+ * DISTRIBUTION_MODE. بنية teacherActivation.ts/verifyTeacherActivation/
+ * peekActivationScope تبقى محفوظة بالكامل بذاتها (صفر حذف) لأي توزيع
+ * مُحكَم/ترخيص مدفوع مستقبلي — فقط غير مُستدعاة من هذا المسار الآن.
  */
 export const setupTeacherOnboarding = async (input: { stage: SchoolStage; displayName: string }): Promise<TeacherSession> => {
   const deviceId = getOrCreateTeacherDeviceId();
 
-  const { signedCode } = await requestTeacherTrialEnrollment(deviceId);
-  const enrollment = await enrollSignedEntitlement(signedCode, "teacher");
-
-  if (enrollment.status !== "success") {
-    throw new Error(`teacher_trial_entitlement_${enrollment.status}`);
-  }
+  await licenseStore.getOrInitializeState("teacher", new Date().toISOString());
 
   const identity = await identityStore.createTeacherOnboardingIdentity({
     stage: input.stage,

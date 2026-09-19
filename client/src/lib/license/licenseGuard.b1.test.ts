@@ -1,5 +1,8 @@
 import "fake-indexeddb/auto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// PHASE PILOT-50-D: هذه الاختبارات تفحص سلوك public-trial تحديدًا (بدء trial تلقائي)
+vi.mock("../distributionMode", () => ({ DISTRIBUTION_MODE: "public-trial" }));
 import type { SignedEntitlementPayload } from "./licenseTypes";
 
 (globalThis as unknown as { window: { indexedDB: IDBFactory } }).window = { indexedDB: globalThis.indexedDB };
@@ -53,30 +56,64 @@ beforeEach(async () => {
 
 afterEach(async () => { await resetDatabase(); });
 
-describe("LIC-6D-B-3B.3-B1: إغلاق مسار Trial المحلية التلقائية", () => {
-  it("1) قاعدة ترخيص فارغة تمامًا -> صفر trial تُنشَأ", async () => {
+describe("LIC-6D-B-3B.3-B1 + PILOT-50-B BLOCKER1: بدء تجربة 3 أشهر رسمية لمعلم/مدير جديد", () => {
+  // PHASE PILOT-50-B: عُدِّلت هذه المجموعة الثلاثة — كانت تُثبِت أن قاعدة
+  // فارغة تبقى missing بلا أي trial (سلوك B1 الأصلي). الآن state===null
+  // يبدأ تجربة 3 أشهر رسمية فعليًا (Blocker 1) — هذا تطور عقد متعمَّد
+  // موثَّق في licenseGuard.ts نفسها، لا خطأ في الاختبار القديم.
+  it("1) أول تشغيل (first run) لقاعدة فارغة تمامًا -> trial_active فورًا، سجل trial حقيقي يُكتَب", async () => {
     const status = await getCurrentLicenseStatus("teacher");
-    expect(status.kind).toBe("missing");
+    expect(status.kind).toBe("trial_active");
     const raw = await licenseStore.readCurrentState("teacher");
-    expect(raw).toBeNull(); // صفر أي شيء كُتِب في القاعدة
+    expect(raw).not.toBeNull();
+    expect((raw as { kind: string }).kind).toBe("trial");
   });
 
-  it("2) قاعدة فارغة -> writesAllowed=false", async () => {
+  it("2) أول تشغيل -> writesAllowed=true", async () => {
     const status = await getCurrentLicenseStatus("teacher");
+    expect(status.writesAllowed).toBe(true);
+    expect(isWriteAllowedSync("teacher")).toBe(true);
+  });
+
+  it("3) إعادة الفتح المتكررة لا تُنشئ trial جديدة في كل مرة — نفس trialStartedAt يبقى ثابتًا", async () => {
+    await getCurrentLicenseStatus("teacher");
+    const rawAfterFirst = await licenseStore.readCurrentState("teacher");
+    const firstStartedAt = (rawAfterFirst as { trialStartedAt: string }).trialStartedAt;
+
+    await getCurrentLicenseStatus("teacher");
+    const second = await getCurrentLicenseStatus("teacher");
+    const rawAfterSecond = await licenseStore.readCurrentState("teacher");
+
+    expect(second.kind).toBe("trial_active");
+    expect((rawAfterSecond as { trialStartedAt: string }).trialStartedAt).toBe(firstStartedAt); // صفر إعادة إنشاء، نفس تاريخ البداية
+  });
+
+  it("3-ب) مدة الانتهاء 3 أشهر تقويمية بالضبط حسب المنطق الحالي (trialDate.ts)", async () => {
+    const status = await getCurrentLicenseStatus("teacher");
+    const raw = await licenseStore.readCurrentState("teacher");
+    const trialStartedAt = new Date((raw as { trialStartedAt: string }).trialStartedAt);
+    const expiresAt = new Date(status.expiresAt);
+    const approxMonths = (expiresAt.getTime() - trialStartedAt.getTime()) / (30 * 86400000);
+    expect(approxMonths).toBeGreaterThan(2.8);
+    expect(approxMonths).toBeLessThan(3.2);
+  });
+
+  it("3-ج) انتهاء Trial فعليًا (تاريخ بداية ماضٍ بأكثر من 3 أشهر) -> الكتابة ممنوعة حسب التصميم الحالي", async () => {
+    await seedRaw({ kind: "trial", trialStartedAt: "2020-01-01T00:00:00.000Z", lastSeenAt: "2020-01-01T00:00:00.000Z" });
+    const status = await getCurrentLicenseStatus("teacher");
+    expect(status.kind).toBe("trial_expired");
     expect(status.writesAllowed).toBe(false);
-    expect(isWriteAllowedSync("teacher")).toBe(false);
   });
 
-  it("3) استدعاءات متكررة لبدء التشغيل بقاعدة فارغة -> لا trial تظهر أبدًا", async () => {
-    await getCurrentLicenseStatus("teacher");
-    await getCurrentLicenseStatus("teacher");
+  it("3-د) إرجاع ساعة الجهاز للخلف بعد رؤية سابقة لا يُمدِّد التجربة (resolveEffectiveNow، حماية قائمة أصلًا)", async () => {
+    const now = new Date().toISOString();
+    await seedRaw({ kind: "trial", trialStartedAt: now, lastSeenAt: now });
     const status = await getCurrentLicenseStatus("teacher");
-    expect(status.kind).toBe("missing");
-    const raw = await licenseStore.readCurrentState("teacher");
-    expect(raw).toBeNull();
+    expect(status.clockRollbackDetected).toBe(false);
+    expect(status.kind).toBe("trial_active");
   });
 
-  it("4) حذف الحالة بعد entitlement نشط -> صفر trial بديلة", async () => {
+  it("4) حذف الحالة بعد entitlement نشط -> تبدأ trial جديدة بدل missing (PILOT-50-B: أي state===null الآن يبدأ تجربة)", async () => {
     const payload: SignedEntitlementPayload = {
       v: 2, entitlementId: "e1", accountId: "a1", kind: "trial", scope: "teacher",
       issuedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 90 * 86400000).toISOString(),
@@ -88,16 +125,16 @@ describe("LIC-6D-B-3B.3-B1: إغلاق مسار Trial المحلية التلق�
 
     await resetDatabase(); // محاكاة حذف القاعدة بالكامل من طرف المستخدم/النظام
     const afterDeleteStatus = await getCurrentLicenseStatus("teacher");
-    expect(afterDeleteStatus.kind).toBe("missing");
-    expect(afterDeleteStatus.writesAllowed).toBe(false);
+    expect(afterDeleteStatus.kind).toBe("trial_active");
+    expect(afterDeleteStatus.writesAllowed).toBe(true);
   });
 
-  it("5) resetLicenseExplicitly -> صفر trial بديلة، الحالة تصبح missing", async () => {
+  it("5) resetLicenseExplicitly يحذف السجل فورًا (result=null)، لكن الاستدعاء التالي يبدأ trial جديدة تلقائيًا (PILOT-50-B)", async () => {
     const result = await licenseStore.resetLicenseExplicitly("teacher");
-    expect(result).toBeNull();
-    const status = await getCurrentLicenseStatus("teacher");
-    expect(status.kind).toBe("missing");
-    expect(status.writesAllowed).toBe(false);
+    expect(result).toBeNull(); // الدالة نفسها بلا تغيير — لا تزال تحذف فقط، صفر إنشاء من طرفها
+    const status = await getCurrentLicenseStatus("teacher"); // البدء الفعلي يحدث هنا، عبر licenseGuard
+    expect(status.kind).toBe("trial_active");
+    expect(status.writesAllowed).toBe(true);
   });
 
   it("6) entitlement مُعبَث به (توقيع خاطئ) -> صفر fallback لـtrial", async () => {
@@ -136,28 +173,28 @@ describe("LIC-6D-B-3B.3-B1: إغلاق مسار Trial المحلية التلق�
     expect(status.writesAllowed).toBe(false);
   });
 
-  it("9) teacher بقاعدة فارغة -> denied", async () => {
+  it("9) teacher بقاعدة فارغة -> trial_active الآن (PILOT-50-B BLOCKER1)", async () => {
     const status = await getCurrentLicenseStatus("teacher");
-    expect(status.writesAllowed).toBe(false);
-    expect(status.kind).toBe("missing");
+    expect(status.writesAllowed).toBe(true);
+    expect(status.kind).toBe("trial_active");
   });
 
-  it("10) director بقاعدة فارغة -> denied (نفس السياسة)", async () => {
+  it("10) director بقاعدة فارغة -> trial_active أيضًا (نفس السياسة، مستقل تمامًا عن teacher)", async () => {
     const status = await getCurrentLicenseStatus("director");
-    expect(status.writesAllowed).toBe(false);
-    expect(status.kind).toBe("missing");
+    expect(status.writesAllowed).toBe(true);
+    expect(status.kind).toBe("trial_active");
   });
 
-  it("11) أثناء التنفيذ غير المتزامن (قبل الاكتمال) -> الكاش المتزامن يبقى false", async () => {
+  it("11) أثناء التنفيذ غير المتزامن (قبل الاكتمال) -> الكاش المتزامن يبقى false حتى مع trial جديدة (fail-closed بنيويًا لا يتأثر)", async () => {
     resetWriteGuardCacheForTests();
     const promise = getCurrentLicenseStatus("teacher");
-    // قبل اكتمال await: الكاش لم يُحدَّث بعد لأي قيمة true إطلاقًا (fail-closed بنيويًا)
+    // قبل اكتمال await: الكاش لم يُحدَّث بعد لأي قيمة true إطلاقًا (fail-closed بنيويًا، بصرف النظر عن النتيجة النهائية)
     expect(isWriteAllowedSync("teacher")).toBe(false);
     await promise;
-    expect(isWriteAllowedSync("teacher")).toBe(false); // يبقى false لأن الحالة الحقيقية missing
+    expect(isWriteAllowedSync("teacher")).toBe(true); // الآن true لأن trial جديدة صالحة فعليًا (PILOT-50-B)
   });
 
-  it("12) استرجاع الحالة الحقيقية بعد missing يُصفِّر أي true قديم (محاكاة cross-tab/reproof)", async () => {
+  it("12) استرجاع الحالة الحقيقية بعد حذف entitlement يبدأ trial جديدة بدل missing (PILOT-50-B، لا عالق قديم لكن أيضًا صفر فراغ دائم)", async () => {
     // حالة أولى نشطة (كأن تبويبًا آخر رأى entitlement صالحًا سابقًا)
     const payload: SignedEntitlementPayload = {
       v: 2, entitlementId: "e5", accountId: "a5", kind: "paid", scope: "teacher",
@@ -170,8 +207,12 @@ describe("LIC-6D-B-3B.3-B1: إغلاق مسار Trial المحلية التلق�
 
     // الحالة تُحذَف (محاكاة حدث خارجي/تبويب آخر يُصفِّر القاعدة)، ثم إعادة تحقق
     await resetDatabase();
-    await getCurrentLicenseStatus("teacher");
-    expect(isWriteAllowedSync("teacher")).toBe(false); // صفر true عالق قديم
+    const afterDeleteStatus = await getCurrentLicenseStatus("teacher");
+    // PILOT-50-B: صفر true "عالق" من الحالة القديمة تحديدًا (entitlement e5
+    // المحذوفة) — لكن true الجديد شرعي تمامًا لأنه ناتج عن trial جديدة
+    // بدأت للتو، لا بقايا الحالة السابقة إطلاقًا (entitlementId مختلف تمامًا)
+    expect(afterDeleteStatus.kind).toBe("trial_active");
+    expect(isWriteAllowedSync("teacher")).toBe(true);
   });
 
   it("13) entitlement صالح موجود بالفعل -> السلوك بلا أي تغيير عن السابق", async () => {

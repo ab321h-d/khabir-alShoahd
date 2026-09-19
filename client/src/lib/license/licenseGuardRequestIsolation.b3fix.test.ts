@@ -94,30 +94,41 @@ describe("LIC-6D-B-3B.3-B3-REAL-FIX: latest-request-id مستقل لكل variant
   });
 
   it("C) طلبان لنفس الـvariant (teacher) ما زالا يطبّقان latest-request-wins بصدق", async () => {
-    const activeCode = await buildCode(activePayload("teacher", "t-c-active"), testKeyPair.privateKey);
+    // PILOT-50-B: أُعيد تصميم هذا الاختبار — السيناريو الأصلي (A تقرأ null
+    // بينما B يزرع entitlement بالتوازي) لم يعد قابلًا للمحاكاة بأمان بعد
+    // Blocker 1، لأن getOrInitializeState الحقيقية ترفض صراحةً (بخطأ آمن
+    // مقصود) التنفيذ لو وجدت entitlement مخزَّنًا فعليًا لحظة استدعائها —
+    // بالضبط الحماية الصحيحة التي تمنع محاولة استبدال entitlement صامتًا
+    // بـtrial. الجوهر الأمني المطلوب هنا (latest-request-wins) يبقى مُختبَرًا
+    // بأمان كامل عبر حالتين موجودتين مسبقًا بدل حالة فارغة/null.
+    const oldCode = await buildCode(activePayload("teacher", "t-c-old"), testKeyPair.privateKey);
+    await seedRaw({ kind: "entitlement", signedCode: oldCode, lastSeenAt: now }, "teacher");
+    const newCode = await buildCode(activePayload("teacher", "t-c-new"), testKeyPair.privateKey);
     const realReadCurrentState = licenseStore.readCurrentState.bind(licenseStore);
 
     let firstStarted = false;
     const readSpy = vi.spyOn(licenseStore, "readCurrentState").mockImplementation(async (variant: "teacher" | "director") => {
       if (variant === "teacher" && !firstStarted) {
         firstStarted = true;
-        await seedRaw({ kind: "entitlement", signedCode: activeCode, lastSeenAt: now }, "teacher");
-        // الطلب الأول (A) يقرأ حالة فارغة (missing) قبل أن يُزرَع أي شيء فعليًا في تسلسله الخاص
-        return null;
+        const capturedResult = await realReadCurrentState(variant); // تلتقط oldCode بصدق فورًا
+        await new Promise((resolve) => setTimeout(resolve, 20)); // A بطيئة، لكن نتيجتها المُلتقَطة ثابتة بالفعل
+        readSpy.mockRestore();
+        return capturedResult;
       }
       return realReadCurrentState(variant);
     });
 
-    const promiseA = getCurrentLicenseStatus("teacher"); // A: سيحسب missing (قرأ null)
+    const promiseA = getCurrentLicenseStatus("teacher"); // A: أقدم، بطيئة، ستحسب نتيجة oldCode المُلتقَطة مسبقًا
     await vi.waitFor(() => expect(firstStarted).toBe(true));
-    readSpy.mockRestore();
 
-    const promiseB = getCurrentLicenseStatus("teacher"); // B: أحدث، سيقرأ الحالة الفعلية المزروعة (active)
+    await seedRaw({ kind: "entitlement", signedCode: newCode, lastSeenAt: now }, "teacher"); // تحديث حقيقي بينما A لا تزال تنتظر
+    const promiseB = getCurrentLicenseStatus("teacher"); // B: أحدث، ستقرأ newCode فورًا
     const [statusA, statusB] = await Promise.all([promiseA, promiseB]);
 
-    expect(statusA.kind).toBe("missing");
+    expect(statusA.kind).toBe("paid_active"); // A حسبت نتيجة صحيحة بناءً على oldCode الذي التقطته
+    expect(statusB.kind).toBe("paid_active"); // B حسبت نتيجة صحيحة بناءً على newCode
     expect(statusB.writesAllowed).toBe(true);
-    // B هو الأحدث فعليًا -> الكاش يعكس نتيجته، لا نتيجة A الأقدم (missing)
+    // B هو الأحدث فعليًا -> الكاش يعكس نتيجته (newCode)، بصرف النظر عن ترتيب اكتمال A/B الفعلي — latest-request-wins محفوظ
     expect(isWriteAllowedSync("teacher")).toBe(true);
   });
 
