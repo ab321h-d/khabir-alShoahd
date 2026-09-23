@@ -59,6 +59,7 @@ import { computeAreaStatus, type CompletenessMetadata } from "@/lib/completeness
 import { inviteFromLocation } from "@/lib/collaborationInvite";
 import { assertWriteAllowedSync } from "@/lib/license/licenseGuard";
 import { useTeacherIdentity } from "@/components/TeacherAuthGate";
+import { directorPackageDownloadName, downloadPortfolioBlob } from "@/lib/exportPortfolio";
 
 type Step = 0 | 1;
 type BeforeInstallPromptEvent = Event & {
@@ -245,7 +246,7 @@ export default function Home() {
   const [captureImages, setCaptureImages] = useState<Array<{ metadata: LocalImageMetadata; url: string }>>([]);
   const [storageSummary, setStorageSummary] = useState({ used: 0, quota: null as number | null, imageCount: 0 });
   const [exporting, setExporting] = useState<"pdf" | "word" | "print" | "director-package" | null>(null);
-  const [preparedPdfPackage, setPreparedPdfPackage] = useState<{ blob: Blob } | null>(null);
+  const [preparedDirectorPackage, setPreparedDirectorPackage] = useState<{ blob: Blob } | null>(null);
   const [liteMode, setLiteMode] = useState(() => {
     try { return window.localStorage.getItem(liteModeStorageKey) === "1"; } catch { return false; }
   });
@@ -1162,13 +1163,11 @@ export default function Home() {
   const prepareDirectorPackage = async () => {
     setExporting("director-package");
     try {
-      const data = await getPortfolioData();
-      const { exportPortfolioPdf } = await import("@/lib/exportPortfolio");
-      const blob = await exportPortfolioPdf(data);
-      setPreparedPdfPackage({ blob });
-      showToast("تم تجهيز ملف PDF");
+      const blob = await buildDirectorPackageBlob();
+      setPreparedDirectorPackage({ blob });
+      showToast("جُهِّزت الحزمة الموحَّدة للمدير");
     } catch (error) {
-      console.error("prepareDirectorPackage: failed to build PDF for sharing", error);
+      console.error("prepareDirectorPackage: failed to build unified director ZIP", error);
       showToast("تعذر تجهيز ملف المدير");
     } finally {
       setExporting(null);
@@ -1176,62 +1175,34 @@ export default function Home() {
   };
 
   /**
-   * R-NEXT-6 / E1: المرحلة الثانية — تُستدعى مباشرة من onClick لزر "مشاركة
-   * الملف"، بلا أي await قبل navigator.share. تشارك PDF فقط (application/pdf)
-   * — ثبت بالاختبار الحي (D5/D6) أن Web Share API لا يقبل application/zip
-   * بموثوقية على Android/Chromium رغم نجاح canShare الشكلي، بينما PDF نوع
-   * مدعوم فعليًا وموثوقًا. لا title/text (غير ضروريين، ثبت عدم تأثيرهما).
+   * R-NEXT-6 / E1 + PHASE NEXT-1: تُستدعى مباشرة من onClick لزر
+   * "إرسال ملف للمدير". لا يوجد await أو import ديناميكي قبل
+   * navigator.share، بحيث يبقى الاستدعاء مباشرًا من مسار نقرة المستخدم.
+   *
+   * مشاركة ZIP قد تُرفض على بعض المتصفحات أو الأجهزة حتى مع استدعاء
+   * navigator.share من نقرة مستخدم صالحة؛ لذلك أي عدم دعم أو فشل أو رفض
+   * يؤدي إلى تنزيل نفس حزمة ZIP كـfallback، ولا يُستخدم PDF بدلًا منها.
    */
-  const shareDirectorPackage = async () => {
-    if (!preparedPdfPackage) return;
-    const { blob } = preparedPdfPackage;
-    const file = new File([blob], "ملف-الأداء-للمراجعة.pdf", { type: "application/pdf" });
-    try {
-      if (navigator.canShare?.({ files: [file] })) {
-        await navigator.share({ files: [file] });
-        showToast("اختر تطبيق المشاركة والمستلم من جهازك");
-      } else {
-        const { downloadPortfolioBlob } = await import("@/lib/exportPortfolio");
-        downloadPortfolioBlob(blob, "ملف-الأداء-للمراجعة.pdf");
-        showToast("نُزّل ملف PDF محليًا؛ أرفقه في البريد أو التطبيق الذي تختاره");
-      }
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") {
-        showToast("أُلغي إرسال الملف");
-      } else {
-        console.error("shareDirectorPackage: navigator.share failed after successful PDF build, falling back to download", error);
-        try {
-          const { downloadPortfolioBlob } = await import("@/lib/exportPortfolio");
-          downloadPortfolioBlob(blob, "ملف-الأداء-للمراجعة.pdf");
-          showToast("تعذّرت المشاركة المباشرة؛ نُزّل ملف PDF محليًا بدلًا من ذلك");
-        } catch (downloadError) {
-          console.error("shareDirectorPackage: fallback download also failed", downloadError);
-          showToast("تعذر تجهيز ملف المدير");
-        }
-      }
-    }
-  };
+  const sendDirectorPackage = () => {
+    if (!preparedDirectorPackage) return;
+    const { blob } = preparedDirectorPackage;
+    const file = new File([blob], directorPackageDownloadName(), { type: "application/zip" });
 
-  /**
-   * R-NEXT-6 / E1: زر ثانوي "تنزيل الحزمة الكاملة" — يبني ZIP الكامل
-   * (portfolio.pdf + completeness.json) عند الطلب فقط، لا يُبنى مسبقًا عند
-   * التجهيز للمشاركة. لا مشاركة له عبر navigator.share إطلاقًا (ZIP غير
-   * مدعوم بموثوقية)، تنزيل محلي مباشر فقط عبر buildDirectorPackageBlob
-   * الحالية دون أي تعديل عليها.
-   */
-  const downloadDirectorPackage = async () => {
-    setExporting("director-package");
-    try {
-      const { directorPackageDownloadName, downloadPortfolioBlob } = await import("@/lib/exportPortfolio");
-      const blob = await buildDirectorPackageBlob();
+    if (!navigator.canShare?.({ files: [file] })) {
       downloadPortfolioBlob(blob, directorPackageDownloadName());
-      showToast("تم تنزيل الحزمة الكاملة (تتضمن بيانات فحص الاكتمال)");
-    } catch (error) {
-      console.error("downloadDirectorPackage: failed to build full ZIP package", error);
-      showToast("تعذر تجهيز الحزمة الكاملة");
-    } finally {
-      setExporting(null);
+      showToast("نُزِّلت حزمة المدير محليًا؛ أرسلها عبر البريد أو التطبيق الذي تختاره");
+      return;
     }
+
+    navigator.share({ files: [file] }).then(
+      () => showToast("اختر تطبيق المشاركة والمستلم من جهازك"),
+      (error: unknown) => {
+        // أي فشل أو رفض، شاملًا إلغاء المستخدم، ينتهي بتنزيل نفس حزمة ZIP.
+        console.error("sendDirectorPackage: navigator.share failed/rejected after successful ZIP build, falling back to download", error);
+        downloadPortfolioBlob(blob, directorPackageDownloadName());
+        showToast("تعذّرت المشاركة المباشرة للحزمة على هذا المتصفح؛ تم تنزيل ملف المدير ويمكنك مشاركته من التنزيلات.");
+      },
+    );
   };
 
   return (
@@ -1501,15 +1472,11 @@ export default function Home() {
                       </div>
                     </section>
                     <section className="manager-send-card" aria-labelledby="manager-send-title">
-                      <div className="manager-send-heading"><span><Send size={19} /></span><div><strong id="manager-send-title">{preparedPdfPackage ? "تم تجهيز ملف PDF" : "تجهيز ملف المشاركة"}</strong><small>{preparedPdfPackage ? "اضغط مشاركة الملف لاختيار تطبيق الإرسال والمستلم." : managerShareProfile.name ? `المستلم: ${managerShareProfile.name}` : "سيتم تجهيز ملف PDF، ثم يمكنك اختيار تطبيق الإرسال والمستلم."}</small></div></div>
-                      {!preparedPdfPackage ? (
-                        <button className="primary-action" type="button" disabled={exporting !== null} onClick={() => { void prepareDirectorPackage(); }}>{exporting === "director-package" ? "جارٍ التجهيز…" : "تجهيز ملف المشاركة"}</button>
+                      <div className="manager-send-heading"><span><Send size={19} /></span><div><strong id="manager-send-title">إرسال ملف للمدير</strong><small>يتم إرسال حزمة ZIP موحّدة وآمنة تحتوي ملفك وبيانات التحقق.</small></div></div>
+                      {!preparedDirectorPackage ? (
+                        <button className="primary-action" type="button" disabled={exporting !== null} onClick={() => { void prepareDirectorPackage(); }}>{exporting === "director-package" ? "جارٍ التجهيز…" : "إرسال ملف للمدير"}</button>
                       ) : (
-                        <>
-                          <button className="primary-action" type="button" onClick={() => { void shareDirectorPackage(); }}><Send size={19} /> مشاركة الملف</button>
-                          <button className="secondary-action" type="button" disabled={exporting !== null} onClick={() => { void downloadDirectorPackage(); }}>{exporting === "director-package" ? "جارٍ تجهيز الحزمة…" : "تنزيل الحزمة الكاملة"}</button>
-                          <small className="manager-package-note">الحزمة الكاملة (ZIP) تتضمن أيضًا بيانات فحص الاكتمال للمدير.</small>
-                        </>
+                        <button className="primary-action" type="button" onClick={sendDirectorPackage}><Send size={19} /> إرسال ملف للمدير</button>
                       )}
                     </section>
                     <button className="collaboration-compact-action" type="button" onClick={() => setCollaborationOpen(true)}><UsersRound size={16} /> دعوات التعاون</button>
