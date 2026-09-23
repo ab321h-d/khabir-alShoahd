@@ -11,6 +11,7 @@ import { escapeHtml } from "@/lib/sanitize";
 import { isDirectorStandalone } from "@/lib/appVariant";
 import { brandEmblemUrl } from "@/lib/brand";
 import CollaborationInviteDialog from "@/components/CollaborationInviteDialog";
+import DirectorPairingDialog from "@/components/DirectorPairingDialog";
 import { inviteFromLocation } from "@/lib/collaborationInvite";
 import { getSuggestedHijriYear } from "@/lib/academicYear";
 
@@ -131,6 +132,7 @@ export default function Director() {
   const [importOpen, setImportOpen] = useState(false);
   const [working, setWorking] = useState(false);
   const [collaborationOpen, setCollaborationOpen] = useState(() => Boolean(inviteFromLocation()));
+  const [pairingDialogOpen, setPairingDialogOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [pdfUrl, setPdfUrl] = useState("");
   const [activeView, setActiveView] = useState<"inbox" | "dashboard" | "report">("inbox");
@@ -512,7 +514,7 @@ export default function Director() {
         <button type="button" onClick={requestActivation}>تفعيل خبير المدير</button>
       </div>
     )}
-    <header className="director-header"><a href="/" aria-label={isDirectorStandalone ? "الصفحة الرئيسية لتطبيق المدير" : "العودة إلى تطبيق المعلم"}><ArrowRight size={20} /></a><div className="director-brand"><img src={brandEmblemUrl} alt="" aria-hidden="true" /><span><strong>خبير الشواهد</strong><small>مساحة المدير</small></span></div><button className="director-collaboration-button" type="button" onClick={() => setCollaborationOpen(true)} aria-label="دعوات التعاون"><UserRound size={16} /> دعوة</button><button className="director-collaboration-button" type="button" onClick={lock} aria-label="قفل حساب المدير"><LockKeyhole size={16} /> قفل الحساب</button></header>
+    <header className="director-header"><a href="/" aria-label={isDirectorStandalone ? "الصفحة الرئيسية لتطبيق المدير" : "العودة إلى تطبيق المعلم"}><ArrowRight size={20} /></a><div className="director-brand"><img src={brandEmblemUrl} alt="" aria-hidden="true" /><span><strong>خبير الشواهد</strong><small>مساحة المدير</small></span></div><button className="director-collaboration-button" type="button" onClick={() => setCollaborationOpen(true)} aria-label="دعوات التعاون"><UserRound size={16} /> دعوة</button><button className="director-collaboration-button" type="button" onClick={() => setPairingDialogOpen(true)} aria-label="ربط معلم"><UserRound size={16} /> ربط معلم</button><button className="director-collaboration-button" type="button" onClick={lock} aria-label="قفل حساب المدير"><LockKeyhole size={16} /> قفل الحساب</button></header>
     <section className="director-shell">
       <aside className="director-rail"><div className="director-intro"><span className="director-kicker">مساحة مراجعة هادئة</span><h1>قيّم الإنجاز،<br />بوضوح وبساطة.</h1><p>استورد نسخة PDF التي تصلك من المعلم، ثم سجّل تقييمك. لا تُرفع الملفات أو التعليقات إلى أي خدمة.</p></div><button className="director-import-button" type="button" onClick={() => setImportOpen(true)}><Upload size={19} /> استيراد ملف PDF</button><div className="director-trust"><LockKeyhole size={18} /><span><strong>لا حسابات ولا مزامنة</strong><small>كل ملف وتقييم يبقيان على هذا الجهاز.</small></span></div></aside>
       <section className="director-workspace">
@@ -548,5 +550,6 @@ export default function Director() {
     {whatsAppTemplateOpen && <div className="director-modal-backdrop" onMouseDown={() => setWhatsAppTemplateOpen(false)}><section className="whatsapp-template-dialog" role="dialog" aria-modal="true" aria-label="إعداد قالب واتساب الافتراضي" onMouseDown={(event) => event.stopPropagation()}><button type="button" className="director-close" onClick={() => setWhatsAppTemplateOpen(false)} aria-label="إغلاق"><X size={18} /></button><span className="whatsapp-template-mark"><MessageCircle size={22} /></span><h2>قالب رسالة واتساب</h2><p>يُحفظ على هذا الجهاز فقط، ويملأ رسالة المتابعة الجديدة تلقائيًا. يبقى تعديل كل رسالة متاحًا قبل فتح واتساب.</p><label><span>القالب الافتراضي</span><textarea aria-label="قالب رسالة واتساب الافتراضي" value={whatsAppTemplate} onChange={(event) => setWhatsAppTemplate(event.target.value.slice(0, 900))} /></label><small className="whatsapp-template-variables">المتغيرات المتاحة: <code>{"{{teacherName}}"}</code> <code>{"{{directorName}}"}</code> <code>{"{{comment}}"}</code></small><div className="whatsapp-template-actions"><button type="button" onClick={() => setWhatsAppTemplate(defaultWhatsAppTemplate)}>استعادة النموذج</button><button className="primary-action" type="button" onClick={() => setWhatsAppTemplateOpen(false)}>تم</button></div></section></div>}
     {toast && <div className="director-toast"><Check size={16} /> {toast}</div>}
     <CollaborationInviteDialog open={collaborationOpen} appRole="director" initialSenderName={directorName} onClose={() => setCollaborationOpen(false)} onToast={showToast} />
+    <DirectorPairingDialog open={pairingDialogOpen} onClose={() => setPairingDialogOpen(false)} displayName={directorName} />
   </main>;
 }

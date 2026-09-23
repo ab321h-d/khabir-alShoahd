@@ -10,6 +10,12 @@ import { LicenseProvider } from "./contexts/LicenseContext";
 import { LicenseActivation } from "./components/LicenseActivation";
 import { DirectorAuthGate } from "./components/DirectorAuthGate";
 import { TeacherAuthGate } from "./components/TeacherAuthGate";
+import { capturePendingPairingIntent } from "./lib/directorPairingUrl";
+
+// PHASE NEXT-2D-D-C-FIX2: التقاط نية اقتران معلَّقة مرة واحدة عند أعلى
+// نقطة تحميل ممكنة — قبل أي عرض React، قبل TeacherAuthGate/onboarding.
+// يضمن استمرارية النية بصرف النظر عن متى تُركَّب Home.tsx فعليًا لاحقًا.
+capturePendingPairingIntent();
 
 const Home = isDirectorStandalone ? null : lazy(() => import("./pages/Home"));
 const Director = isTeacherStandalone ? null : lazy(() => import("./pages/Director"));

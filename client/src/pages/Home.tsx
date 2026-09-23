@@ -54,9 +54,11 @@ import { getSuggestedHijriYear } from "@/lib/academicYear";
 import { brandEmblemUrl, brandWordmarkUrl } from "@/lib/brand";
 import { saudiMinistryOfEducationLogoUrl } from "@/lib/ministryLogo";
 import CollaborationInviteDialog from "@/components/CollaborationInviteDialog";
+import TeacherPairingConfirmDialog from "@/components/TeacherPairingConfirmDialog";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { computeAreaStatus, type CompletenessMetadata } from "@/lib/completenessCheck";
 import { inviteFromLocation } from "@/lib/collaborationInvite";
+import { consumePendingPairingIntent, clearPendingPairingIntent } from "@/lib/directorPairingUrl";
 import { assertWriteAllowedSync } from "@/lib/license/licenseGuard";
 import { useTeacherIdentity } from "@/components/TeacherAuthGate";
 import { directorPackageDownloadName, downloadPortfolioBlob } from "@/lib/exportPortfolio";
@@ -261,6 +263,7 @@ export default function Home() {
     try { return window.localStorage.getItem(firstSetupStorageKey) === "done" || window.localStorage.getItem(firstSetupStorageKey) === "skipped"; } catch { return false; }
   });
   const [collaborationOpen, setCollaborationOpen] = useState(() => Boolean(inviteFromLocation()));
+  const [pairingHash, setPairingHash] = useState(() => consumePendingPairingIntent());
   const [clearDataOpen, setClearDataOpen] = useState(false);
   const [clearDataConfirmation, setClearDataConfirmation] = useState("");
   const [clearEvidenceOpen, setClearEvidenceOpen] = useState(false);
@@ -1542,6 +1545,13 @@ export default function Home() {
           return next;
         });
       }} />
+      {pairingHash.kind !== "none" && (
+        <TeacherPairingConfirmDialog
+          token={pairingHash.kind === "token" ? pairingHash.token : ""}
+          onClose={() => { clearPendingPairingIntent(); setPairingHash({ kind: "none" }); }}
+          onPaired={() => { clearPendingPairingIntent(); }}
+        />
+      )}
 
       <Sheet open={previewEvidenceId !== null} onOpenChange={(open) => { if (!open) { setPreviewEvidenceId(null); setPreviewImageIndex(0); } }}>
         <SheetContent side="bottom" dir="rtl" className="text-right max-h-[85vh] overflow-y-auto overflow-x-hidden">
