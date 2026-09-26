@@ -55,10 +55,12 @@ import { brandEmblemUrl, brandWordmarkUrl } from "@/lib/brand";
 import { saudiMinistryOfEducationLogoUrl } from "@/lib/ministryLogo";
 import CollaborationInviteDialog from "@/components/CollaborationInviteDialog";
 import TeacherPairingConfirmDialog from "@/components/TeacherPairingConfirmDialog";
+import TeacherDeliveryCapabilityConfirmDialog from "@/components/TeacherDeliveryCapabilityConfirmDialog";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { computeAreaStatus, type CompletenessMetadata } from "@/lib/completenessCheck";
 import { inviteFromLocation } from "@/lib/collaborationInvite";
 import { consumePendingPairingIntent, clearPendingPairingIntent } from "@/lib/directorPairingUrl";
+import { consumePendingDeliveryIntent } from "@/lib/directorDeliverySessionUrl";
 import { assertWriteAllowedSync } from "@/lib/license/licenseGuard";
 import { useTeacherIdentity } from "@/components/TeacherAuthGate";
 import { directorPackageDownloadName, downloadPortfolioBlob } from "@/lib/exportPortfolio";
@@ -264,6 +266,7 @@ export default function Home() {
   });
   const [collaborationOpen, setCollaborationOpen] = useState(() => Boolean(inviteFromLocation()));
   const [pairingHash, setPairingHash] = useState(() => consumePendingPairingIntent());
+  const [deliveryHash, setDeliveryHash] = useState(() => consumePendingDeliveryIntent());
   const [clearDataOpen, setClearDataOpen] = useState(false);
   const [clearDataConfirmation, setClearDataConfirmation] = useState("");
   const [clearEvidenceOpen, setClearEvidenceOpen] = useState(false);
@@ -1550,6 +1553,16 @@ export default function Home() {
           token={pairingHash.kind === "token" ? pairingHash.token : ""}
           onClose={() => { clearPendingPairingIntent(); setPairingHash({ kind: "none" }); }}
           onPaired={() => { clearPendingPairingIntent(); }}
+        />
+      )}
+      {deliveryHash.kind === "intent" && (
+        <TeacherDeliveryCapabilityConfirmDialog
+          sessionId={deliveryHash.intent.sessionId}
+          deliveryProof={deliveryHash.intent.deliveryProof}
+          capabilitySecret={deliveryHash.intent.capabilitySecret}
+          redemptionAttemptId={deliveryHash.redemptionAttemptId}
+          resolvedIdentity={deliveryHash.resolvedIdentity}
+          onClose={() => setDeliveryHash({ kind: "none" })}
         />
       )}
 
